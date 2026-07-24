@@ -88,6 +88,10 @@ export const api = {
 
   search: (q: string) => request<SearchResults>(`/search?q=${encodeURIComponent(q)}`),
 
+  // RAG-Fusion semantic search (multi-query + reciprocal-rank fusion) across transcripts.
+  semanticSearch: (q: string) =>
+    request<SearchResults>(`/search/semantic?q=${encodeURIComponent(q)}`),
+
   chatWithMeeting: (
     id: number,
     question: string,

@@ -146,8 +146,44 @@ Ask on `/meetings/1`: *"Who owns the search rebuild spec and by when?"* → grou
 a `Marcus Rodriguez · 1:54` chip that seeks the player. Ask *"What is the capital of France?"*
 → "I don't know based on this meeting." with no chips.
 
-## 3. RAG #3 — RAG-Fusion / Multi-Query (semantic search)  ⏳ Phase C
-_To be written when built._
+## 3. RAG #3 — RAG-Fusion / Multi-Query (semantic search)  ✅ Phase C
+
+**File:** [`backend/app/services/rag/fusion_rag.py`](../backend/app/services/rag/fusion_rag.py) ·
+**Wired at:** `GET /api/search/semantic` (`routers/search.py`) · **UI:** `SearchView.tsx` (Keyword | Semantic toggle)
+
+### The idea
+Two independent upgrades over the app's old substring search:
+1. **Semantic** — search by *meaning* (embeddings), so "reduce churn / keep users engaged" finds
+   the onboarding & activation discussions even though those exact words never appear.
+2. **Multi-query fusion (RAG-Fusion)** — one phrasing is a narrow lens. The LLM rewrites the
+   query into several phrasings, we retrieve for *each*, then merge the ranked lists. Passages
+   that rank well across *many* phrasings win — more robust than any single query.
+
+### The graph
+```
+START → generate_queries → retrieve (one ranked list per sub-query) → fuse (RRF) → END
+```
+- **`generate_queries`** → LLM produces 3 alternative phrasings; we search the original **+** all 3.
+- **`retrieve`** → `similarity_search` for each sub-query (no `meeting_id` filter → across *all*
+  meetings). Each returns a ranked list.
+- **`fuse`** → **Reciprocal Rank Fusion**: a passage's score = Σ `1 / (K + rank)` over the lists
+  it appears in (`K = 60`). We sort by that. RRF uses only *ranks*, never raw similarity scores,
+  so there's nothing to calibrate across queries — that's why it's the standard fusion method.
+
+### Why it reuses the existing UI
+`fusion_rag.search()` returns dicts shaped exactly like `SearchMatch` (`field="transcript"` +
+`start_time`), so the `/search` page renders them with the same result cards and the same
+click-to-timestamp deep-links — the only new UI is a **Keyword | Semantic** toggle. Adding a
+whole new capability with almost no new UI is the payoff of keeping a stable response contract.
+
+### Degradation (never breaks)
+No Groq key → skip multi-query, fall back to a single semantic query. Any error → single query,
+then empty results. Search never throws.
+
+### Verify
+On `/search`, switch to **Semantic** and search *"reduce customer churn and keep users
+engaged"*. Keyword mode → **0 results** (no literal match). Semantic mode → the onboarding,
+activation, and marketing moments, each deep-linking into the transcript.
 
 ## 4. RAG #2 — Adaptive RAG (the unified assistant's router)  ⏳ Phase D
 _To be written when built._

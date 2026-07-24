@@ -1,13 +1,14 @@
 "use client";
 
-import { FileText, MessageSquareText, Search, Tag, User } from "lucide-react";
+import { FileText, MessageSquareText, Search, Sparkles, Tag, User } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { CenteredSpinner, EmptyState } from "@/components/ui/feedback";
-import { useSearch } from "@/lib/hooks";
+import { useSearch, type SearchMode } from "@/lib/hooks";
 import type { SearchMatch } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const FIELD_META: Record<
   SearchMatch["field"],
@@ -26,13 +27,14 @@ export default function SearchView() {
 
   const [value, setValue] = useState(initial);
   const [query, setQuery] = useState(initial);
+  const [mode, setMode] = useState<SearchMode>("keyword");
 
   useEffect(() => {
     setValue(initial);
     setQuery(initial);
   }, [initial]);
 
-  const { data, isFetching } = useSearch(query);
+  const { data, isFetching } = useSearch(query, mode);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -50,9 +52,28 @@ export default function SearchView() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 md:px-8">
       <h1 className="text-2xl font-semibold tracking-tight text-ink">Search</h1>
-      <p className="mb-5 mt-1 text-sm text-muted">
-        Search across every meeting title, participant, summary, and transcript.
+      <p className="mb-4 mt-1 text-sm text-muted">
+        {mode === "semantic"
+          ? "Semantic search — finds transcript moments by meaning, even without exact words (RAG-Fusion)."
+          : "Search across every meeting title, participant, summary, and transcript."}
       </p>
+
+      {/* Keyword | Semantic mode toggle */}
+      <div className="mb-4 inline-flex rounded-lg border border-line bg-card p-0.5">
+        {(["keyword", "semantic"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition",
+              mode === m ? "bg-brand text-brand-ink" : "text-muted hover:text-ink",
+            )}
+          >
+            {m === "semantic" ? <Sparkles size={14} /> : <Search size={14} />}
+            {m === "semantic" ? "Semantic" : "Keyword"}
+          </button>
+        ))}
+      </div>
 
       <form onSubmit={submit} className="relative mb-6">
         <Search

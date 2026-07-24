@@ -78,3 +78,15 @@ def global_search(
                     break
 
     return schemas.SearchResults(query=q, count=len(results), results=results)
+
+
+@router.get("/search/semantic", response_model=schemas.SearchResults)
+def semantic_search(q: str = Query(..., min_length=1)):
+    """RAG-Fusion semantic search: multi-query + reciprocal-rank fusion over all
+    transcripts. Returns the same SearchMatch shape as keyword search (so the UI and
+    deep-linking are unchanged), just ranked by meaning instead of substring match."""
+    from ..services.rag import fusion_rag
+
+    matches = fusion_rag.search(q, top_n=8)
+    results = [schemas.SearchMatch(**m) for m in matches]
+    return schemas.SearchResults(query=q, count=len(results), results=results)

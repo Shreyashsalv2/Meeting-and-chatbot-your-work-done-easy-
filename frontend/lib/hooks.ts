@@ -14,11 +14,13 @@ import type {
   MeetingUpdateInput,
 } from "./types";
 
+export type SearchMode = "keyword" | "semantic";
+
 export const keys = {
   meetings: (params?: MeetingQuery) =>
     params ? (["meetings", params] as const) : (["meetings"] as const),
   meeting: (id: number) => ["meeting", id] as const,
-  search: (q: string) => ["search", q] as const,
+  search: (q: string, mode: SearchMode = "keyword") => ["search", mode, q] as const,
 };
 
 export function useMeetings(params: MeetingQuery = {}) {
@@ -36,10 +38,10 @@ export function useMeeting(id: number) {
   });
 }
 
-export function useSearch(q: string) {
+export function useSearch(q: string, mode: SearchMode = "keyword") {
   return useQuery({
-    queryKey: keys.search(q),
-    queryFn: () => api.search(q),
+    queryKey: keys.search(q, mode),
+    queryFn: () => (mode === "semantic" ? api.semanticSearch(q) : api.search(q)),
     enabled: q.trim().length > 0,
   });
 }
