@@ -231,7 +231,7 @@ export default function MeetingDetailView({
         meeting={meeting}
       />
 
-      <MeetingChat meetingId={meeting.id} />
+      <MeetingChat meetingId={meeting.id} onSeek={(t) => seekTo(t, true)} />
     </div>
   );
 }

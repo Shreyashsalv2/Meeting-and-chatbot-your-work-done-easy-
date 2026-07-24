@@ -82,6 +82,20 @@ export interface SearchResults {
   results: SearchMatch[];
 }
 
+// A transcript moment a chat/assistant answer was grounded in (RAG citations).
+export interface ChatCitation {
+  meeting_id?: number | null;
+  meeting_title?: string | null;
+  speaker?: string | null;
+  start_time?: number | null;
+  snippet: string;
+}
+
+export interface ChatResponse {
+  answer: string;
+  citations: ChatCitation[];
+}
+
 // --- Request payloads ---
 export interface ParticipantInput {
   name: string;

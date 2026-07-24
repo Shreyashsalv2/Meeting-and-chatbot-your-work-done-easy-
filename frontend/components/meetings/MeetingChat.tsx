@@ -1,19 +1,27 @@
 "use client";
 
-import { MessageSquareText, Send, Sparkles, X } from "lucide-react";
+import { Clock, MessageSquareText, Send, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Spinner } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
+import { formatDuration } from "@/lib/format";
+import type { ChatCitation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = { role: "user" | "assistant"; content: string; citations?: ChatCitation[] };
 
 // Light guard against abuse of the shared Groq key on the public site.
 const MAX_USER_MESSAGES = 20;
 
-export function MeetingChat({ meetingId }: { meetingId: number }) {
+export function MeetingChat({
+  meetingId,
+  onSeek,
+}: {
+  meetingId: number;
+  onSeek?: (startTime: number) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -35,8 +43,8 @@ export function MeetingChat({ meetingId }: { meetingId: number }) {
     setInput("");
     setLoading(true);
     try {
-      const { answer } = await api.chatWithMeeting(meetingId, q, history);
-      setMessages((m) => [...m, { role: "assistant", content: answer }]);
+      const { answer, citations } = await api.chatWithMeeting(meetingId, q, history);
+      setMessages((m) => [...m, { role: "assistant", content: answer, citations }]);
     } catch {
       toast.error("Couldn't get an answer — try again.");
       setMessages((m) => [
@@ -78,7 +86,10 @@ export function MeetingChat({ meetingId }: { meetingId: number }) {
             {messages.map((m, i) => (
               <div
                 key={i}
-                className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
+                className={cn(
+                  "flex flex-col gap-1.5",
+                  m.role === "user" ? "items-end" : "items-start",
+                )}
               >
                 <div
                   className={cn(
@@ -88,6 +99,22 @@ export function MeetingChat({ meetingId }: { meetingId: number }) {
                 >
                   {m.content}
                 </div>
+                {m.role === "assistant" && m.citations && m.citations.length > 0 && (
+                  <div className="flex max-w-[85%] flex-wrap gap-1">
+                    {m.citations.map((c, j) => (
+                      <button
+                        key={j}
+                        onClick={() => c.start_time != null && onSeek?.(c.start_time)}
+                        title={c.snippet}
+                        className="inline-flex items-center gap-1 rounded-full border border-line bg-canvas px-2 py-0.5 text-xs text-muted transition hover:border-brand hover:text-brand"
+                      >
+                        <Clock size={11} />
+                        {c.speaker ? `${c.speaker} · ` : ""}
+                        {formatDuration(c.start_time ?? 0)}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
             {loading && (

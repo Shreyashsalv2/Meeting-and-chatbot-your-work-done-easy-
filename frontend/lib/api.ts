@@ -2,6 +2,7 @@
 import type {
   ActionItem,
   ActionItemInput,
+  ChatResponse,
   MeetingCreateInput,
   MeetingDetail,
   MeetingListItem,
@@ -92,7 +93,7 @@ export const api = {
     question: string,
     history: { role: string; content: string }[] = [],
   ) =>
-    request<{ answer: string }>(`/meetings/${id}/chat`, {
+    request<ChatResponse>(`/meetings/${id}/chat`, {
       method: "POST",
       body: JSON.stringify({ question, history }),
     }),

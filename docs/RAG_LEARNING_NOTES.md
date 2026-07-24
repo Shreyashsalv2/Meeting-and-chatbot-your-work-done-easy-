@@ -88,8 +88,63 @@ PY
 
 ---
 
-## 2. RAG #1 — Self-RAG (per-meeting chat)  ⏳ Phase B
-_To be written when built._
+## 2. RAG #1 — Self-RAG (per-meeting chat)  ✅ Phase B
+
+**File:** [`backend/app/services/rag/self_rag.py`](../backend/app/services/rag/self_rag.py) ·
+**Wired at:** `POST /api/meetings/{id}/chat` (`routers/meetings.py`) · **UI:** `MeetingChat.tsx`
+
+### The idea
+Plain ("naive") RAG does: retrieve → stuff into prompt → answer, and *hopes* the chunks
+were relevant and the answer is faithful. **Self-RAG adds reflection**: the model grades its
+own retrieval and its own answer, and *corrects* itself. Concretely we added three checks the
+naive version doesn't have:
+1. **Grade documents** — are the retrieved chunks actually relevant? Drop the ones that aren't.
+2. **Rewrite & retry** — if nothing relevant came back, rewrite the question and retrieve again.
+3. **Grade the answer** — is it *grounded* in the context (not invented) and does it *answer*
+   the question? If not, retry (bounded).
+
+This is why it's a **graph**: naive RAG is a straight line; Self-RAG has branches and a loop.
+
+### The graph
+```
+START → retrieve → grade_documents ──has relevant?──┬─ yes ─────────► generate → grade_generation
+                                                    ├─ no, retry left ► transform_query → retrieve
+                                                    └─ no, no retries ► not_covered → END
+grade_generation ──useful?──┬─ yes / out of budget ─► END
+                            └─ no ► transform_query → retrieve
+```
+- **`retrieve`** → `vector_store.similarity_search(q, meeting_id=...)` — note the `meeting_id`
+  filter: this chat only sees *its* meeting's chunks.
+- **`grade_documents`** → one LLM call: "which of these numbered excerpts are relevant?" We keep
+  those. (One call for all chunks, not one per chunk — cheaper.)
+- **`transform_query`** → one LLM call rewriting the question into a better search query. This is
+  the only place `retries` is incremented, so the loop is guaranteed to end after
+  `self_rag_max_retries`.
+- **`generate`** → the answer, from kept chunks + last-8 chat history, with a hard rule to say
+  *"I don't know based on this meeting"* when the context lacks the answer.
+- **`grade_generation`** → one LLM call returning two yes/no tokens (grounded? answers?). If bad
+  and we still have budget, loop back through `transform_query`.
+
+### Citations
+The chunks that survive grading carry `speaker` + `start_time` metadata, so the answer ships
+with **citations** the UI renders as chips. Clicking a chip calls `onSeek(start_time)` →
+`seekTo()` in `MeetingDetailView`, which moves the (simulated) player to that moment. Grounding
+you can *click*.
+
+### Key implementation choices (and why)
+- **String grading, not function-calling.** Graders ask for `yes/no` (or "1,3") text and parse
+  it. Simpler and more robust across models than structured/tool output, and every grader
+  **fails open** (on error it assumes "keep"/"accept") so a flaky grader never blocks the user.
+- **One shared `retries` counter, incremented only in `transform_query`.** LangGraph conditional
+  edges *decide* but can't *mutate* state, so the increment lives in a node. One increment site =
+  easy to reason about the bound.
+- **Never raises.** `answer()` catches everything and falls back to the old naive
+  full-transcript chat (`groq_service.chat_with_meeting`), then to a friendly message.
+
+### Verify
+Ask on `/meetings/1`: *"Who owns the search rebuild spec and by when?"* → grounded answer +
+a `Marcus Rodriguez · 1:54` chip that seeks the player. Ask *"What is the capital of France?"*
+→ "I don't know based on this meeting." with no chips.
 
 ## 3. RAG #3 — RAG-Fusion / Multi-Query (semantic search)  ⏳ Phase C
 _To be written when built._
@@ -130,6 +185,15 @@ teaching pass.
   integration package — again only `get_embeddings()` changes.
 - **Chroma telemetry noise** — disabled via `ChromaSettings(anonymized_telemetry=False)` in
   `get_store()`.
+- **LangGraph conditional edges can't mutate state** (Phase B). A conditional edge is a pure
+  function `state → next_node_name`; it can't bump a counter. So the retry counter is incremented
+  inside the `transform_query` *node*, and the edge only reads it. Keeping a single increment site
+  makes the loop bound obvious.
+- **Graders must fail open** (Phase B). If a yes/no grader errors or returns garbage, defaulting to
+  "no" could loop forever or wrongly refuse. We default to "keep the docs / accept the answer" so a
+  flaky grader degrades to naive RAG instead of breaking the chat.
+- **`groq` 0.37.1 live path re-verified** (Phase B): Self-RAG calls Groq via `ChatGroq` and the
+  existing `groq_service` still works — the earlier version downgrade caused no issues.
 
 ### Anticipated (watch for these in later phases)
 - Extra LLM calls (grading, routing, multi-query, agent steps) eat Groq tokens/latency → keep

@@ -181,5 +181,16 @@ class ChatRequest(BaseModel):
     history: Optional[list[ChatMessage]] = None
 
 
+class ChatCitation(BaseModel):
+    """A transcript moment an answer was grounded in (for deep-link chips)."""
+
+    meeting_id: Optional[int] = None
+    meeting_title: Optional[str] = None
+    speaker: Optional[str] = None
+    start_time: Optional[float] = None
+    snippet: str
+
+
 class ChatResponse(BaseModel):
     answer: str
+    citations: list[ChatCitation] = []

@@ -168,7 +168,14 @@ def chat_about_meeting(
     if not payload.question.strip():
         raise HTTPException(status_code=422, detail="Question cannot be empty")
     history = [{"role": m.role, "content": m.content} for m in (payload.history or [])]
-    answer = groq_service.chat_with_meeting(
-        crud.transcript_as_text(meeting), payload.question, history
+    # RAG #1 — Self-RAG: retrieve → grade → generate → self-critique, with a naive
+    # full-transcript fallback (handled inside answer()) if the graph ever fails.
+    from ..services.rag import self_rag
+
+    result = self_rag.answer(
+        meeting_id,
+        payload.question,
+        history,
+        fallback_transcript=crud.transcript_as_text(meeting),
     )
-    return schemas.ChatResponse(answer=answer)
+    return schemas.ChatResponse(answer=result["answer"], citations=result["citations"])
