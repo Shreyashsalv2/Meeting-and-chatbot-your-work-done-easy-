@@ -131,6 +131,7 @@ def update_meeting(
     session.add(meeting)
     session.commit()
     session.refresh(meeting)
+    crud.index_meeting_safe(meeting)  # refresh RAG metadata (e.g. title)
     return meeting
 
 
@@ -139,6 +140,7 @@ def delete_meeting(meeting_id: int, session: Session = Depends(get_session)):
     meeting = _get_or_404(session, meeting_id)
     session.delete(meeting)
     session.commit()
+    crud.deindex_meeting_safe(meeting_id)  # drop its chunks from the RAG index
     return Response(status_code=204)
 
 

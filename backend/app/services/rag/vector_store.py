@@ -1,0 +1,194 @@
+"""Shared RAG foundation: embeddings, vector store, indexing, retrieval.
+
+This module is the single dependency-inversion seam for all four RAG techniques.
+The graphs import ``get_llm`` / ``retriever`` / ``similarity_search`` from here and
+never touch Chroma / fastembed / Groq directly, so moving to a hosted embeddings
+API or a different vector store is a one-function change.
+
+Design notes (kept in sync with docs/RAG_LEARNING_NOTES.md):
+- **Embeddings**: fastembed (ONNX runtime, no torch) → local, no API key, small.
+- **Chunking**: we group consecutive speaker turns up to ``rag_chunk_size`` rather
+  than blindly character-splitting, so every chunk keeps the *timestamp of its
+  first utterance*. That timestamp is what powers click-to-seek citations.
+- **One collection** for all meetings; ``meeting_id`` metadata drives per-meeting
+  filtering (Self-RAG, single-meeting routing) — this is why Chroma over FAISS.
+- All indexing is **best-effort** and callers wrap it so it can never break CRUD.
+"""
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+from typing import TYPE_CHECKING, Optional
+
+from ...config import settings
+
+if TYPE_CHECKING:  # avoid importing heavy libs at module load
+    from langchain_core.documents import Document
+
+logger = logging.getLogger(__name__)
+
+_COLLECTION = "meeting_segments"
+
+
+# --- Seams (Dependency Inversion): swap these to change providers -------------
+@lru_cache(maxsize=1)
+def get_embeddings():
+    """Local, no-key embeddings (fastembed / ONNX — no torch).
+
+    THE single swap point for a hosted embeddings API later.
+    """
+    from langchain_community.embeddings import FastEmbedEmbeddings
+
+    return FastEmbedEmbeddings(model_name=settings.embeddings_model)
+
+
+def llm_available() -> bool:
+    """Whether the Groq-backed LLM can be constructed (key present)."""
+    return bool(settings.groq_api_key)
+
+
+def get_llm(temperature: float = 0.2, **kwargs):
+    """A ChatGroq instance. Raises if no key — callers guard with ``llm_available``."""
+    if not settings.groq_api_key:
+        raise RuntimeError("GROQ_API_KEY not configured")
+    from langchain_groq import ChatGroq
+
+    return ChatGroq(
+        model=settings.groq_model,
+        api_key=settings.groq_api_key,
+        temperature=temperature,
+        **kwargs,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_store():
+    """The persistent Chroma vector store (telemetry disabled)."""
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    from langchain_chroma import Chroma
+
+    client = chromadb.PersistentClient(
+        path=settings.chroma_dir,
+        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
+    )
+    return Chroma(
+        client=client,
+        collection_name=_COLLECTION,
+        embedding_function=get_embeddings(),
+    )
+
+
+# --- Chunking ----------------------------------------------------------------
+def _chunk_meeting(meeting) -> tuple[list["Document"], list[str]]:
+    """Group consecutive speaker turns into ~``rag_chunk_size`` chunks.
+
+    Each chunk carries the metadata of its *first* segment (notably ``start_time``),
+    so a retrieved chunk can deep-link to that moment. Returns (documents, ids)
+    with stable ids ``m{meeting_id}-c{n}`` so re-indexing upserts cleanly.
+    """
+    from langchain_core.documents import Document
+
+    segments = list(meeting.segments)
+    docs: list[Document] = []
+    ids: list[str] = []
+
+    buf: list[str] = []
+    buf_len = 0
+    anchor = None  # first segment in the current buffer
+
+    def flush():
+        nonlocal buf, buf_len, anchor
+        if not buf or anchor is None:
+            return
+        idx = len(docs)
+        docs.append(
+            Document(
+                page_content="\n".join(buf),
+                metadata={
+                    "meeting_id": int(meeting.id),
+                    "meeting_title": meeting.title,
+                    "speaker": anchor.speaker,
+                    "start_time": float(anchor.start_time),
+                    "order_index": int(anchor.order_index),
+                },
+            )
+        )
+        ids.append(f"m{meeting.id}-c{idx}")
+        buf, buf_len, anchor = [], 0, None
+
+    for seg in segments:
+        line = f"{seg.speaker}: {seg.text}"
+        if anchor is None:
+            anchor = seg
+        buf.append(line)
+        buf_len += len(line)
+        if buf_len >= settings.rag_chunk_size:
+            flush()
+    flush()
+    return docs, ids
+
+
+# --- Indexing (best-effort; callers must guard) ------------------------------
+def remove_meeting(meeting_id: int) -> None:
+    store = get_store()
+    existing = store.get(where={"meeting_id": int(meeting_id)})
+    stale = existing.get("ids") or []
+    if stale:
+        store.delete(ids=stale)
+
+
+def index_meeting(meeting) -> int:
+    """(Re)index one meeting's transcript. Idempotent upsert. Returns chunk count."""
+    docs, ids = _chunk_meeting(meeting)
+    remove_meeting(meeting.id)  # clear old chunks first
+    if docs:
+        get_store().add_documents(docs, ids=ids)
+    return len(docs)
+
+
+def reindex_all(session) -> int:
+    """Rebuild the whole index from the DB. Returns total meetings indexed."""
+    from sqlmodel import select
+
+    from ...models import Meeting
+
+    meetings = session.exec(select(Meeting)).all()
+    for m in meetings:
+        index_meeting(m)
+    return len(meetings)
+
+
+def count() -> int:
+    """Number of chunks currently in the store (for verification/health)."""
+    try:
+        return get_store()._collection.count()
+    except Exception:  # noqa: BLE001
+        return len(get_store().get().get("ids") or [])
+
+
+def ensure_indexed(session) -> None:
+    """Index everything if the store is empty (safe to call on every startup)."""
+    try:
+        if count() == 0:
+            n = reindex_all(session)
+            logger.info("RAG: indexed %d meetings into Chroma on startup.", n)
+    except Exception as exc:  # noqa: BLE001 - never block startup
+        logger.warning("RAG startup indexing skipped: %s", exc)
+
+
+# --- Retrieval ---------------------------------------------------------------
+def similarity_search(
+    query: str, meeting_id: Optional[int] = None, k: Optional[int] = None
+) -> list["Document"]:
+    """Top-k chunks for ``query``, optionally filtered to one meeting."""
+    flt = {"meeting_id": int(meeting_id)} if meeting_id is not None else None
+    return get_store().similarity_search(query, k=k or settings.rag_top_k, filter=flt)
+
+
+def retriever(meeting_id: Optional[int] = None, k: Optional[int] = None):
+    """A LangChain retriever, optionally scoped to one meeting via metadata filter."""
+    search_kwargs: dict = {"k": k or settings.rag_top_k}
+    if meeting_id is not None:
+        search_kwargs["filter"] = {"meeting_id": int(meeting_id)}
+    return get_store().as_retriever(search_kwargs=search_kwargs)

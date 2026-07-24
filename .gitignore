@@ -15,6 +15,11 @@ __pycache__/
 *.db
 *.sqlite3
 
+# ---- RAG vector store (rebuilt from the DB on startup) ----
+chroma/
+backend/chroma/
+.fastembed_cache/
+
 # ---- Node / Next.js / frontend ----
 node_modules/
 .next/

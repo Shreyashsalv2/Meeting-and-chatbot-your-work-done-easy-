@@ -5,6 +5,7 @@ payload into a meeting graph, and (re)applying AI-generated insights.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
@@ -13,9 +14,31 @@ from . import models, schemas, transcript_parser
 from .models import GeneratedBy
 from .services import groq_service
 
+logger = logging.getLogger(__name__)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def index_meeting_safe(meeting: "models.Meeting") -> None:
+    """Best-effort RAG (re)index of a meeting. Must never break CRUD."""
+    try:
+        from .services.rag import vector_store
+
+        vector_store.index_meeting(meeting)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG index failed for meeting %s: %s", getattr(meeting, "id", "?"), exc)
+
+
+def deindex_meeting_safe(meeting_id: int) -> None:
+    """Best-effort removal of a meeting's chunks from the vector store."""
+    try:
+        from .services.rag import vector_store
+
+        vector_store.remove_meeting(meeting_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG de-index failed for meeting %s: %s", meeting_id, exc)
 
 
 def _estimate_end(start: float, text: str) -> float:
@@ -100,6 +123,7 @@ def create_meeting(session: Session, payload: schemas.MeetingCreate) -> models.M
 
     session.commit()
     session.refresh(meeting)
+    index_meeting_safe(meeting)  # add this meeting's transcript to the RAG index
     return meeting
 
 

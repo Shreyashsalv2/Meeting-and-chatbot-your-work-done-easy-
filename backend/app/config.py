@@ -24,6 +24,20 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
+    # --- RAG (LangChain + LangGraph) ---
+    # Local, no-key embeddings via fastembed (ONNX — no torch). This is the single
+    # swap point: change ``embeddings_model`` / ``get_embeddings()`` to move to a
+    # hosted embeddings API later without touching any RAG graph.
+    embeddings_model: str = "BAAI/bge-small-en-v1.5"
+    chroma_dir: str = "./chroma"          # persistent vector store location
+    # We chunk by grouping consecutive speaker turns up to this many chars (not a
+    # blind character split) so each chunk keeps the timestamp of its first turn —
+    # that's what powers click-to-seek citations. Overlap is therefore N/A.
+    rag_chunk_size: int = 500             # chars per transcript chunk
+    rag_top_k: int = 5                    # retrieved chunks per query
+    self_rag_max_retries: int = 1         # query-rewrite retries in Self-RAG
+    agent_max_steps: int = 6              # tool-call cap in Agentic RAG
+
     # --- CORS / frontend ---
     # Production frontend origin (the Vercel URL). Localhost is always allowed.
     frontend_url: str = "http://localhost:3000"

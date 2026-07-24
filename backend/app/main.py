@@ -14,7 +14,22 @@ from .seed import seed_if_empty
 async def lifespan(app: FastAPI):
     init_db()
     seed_if_empty()
+    _ensure_rag_indexed()
     yield
+
+
+def _ensure_rag_indexed() -> None:
+    """Build the vector index on startup if empty (best-effort — never blocks boot)."""
+    try:
+        from sqlmodel import Session
+
+        from .database import engine
+        from .services.rag import vector_store
+
+        with Session(engine) as session:
+            vector_store.ensure_indexed(session)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 app = FastAPI(
