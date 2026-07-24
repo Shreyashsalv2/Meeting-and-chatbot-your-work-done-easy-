@@ -3,6 +3,7 @@
 import {
   Bot,
   Home,
+  MessagesSquare,
   Puzzle,
   Search,
   Settings,
@@ -26,6 +27,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { label: "Home", href: "/", icon: Home },
+  { label: "Assistant", href: "/assistant", icon: MessagesSquare },
   { label: "Search", href: "/search", icon: Search },
   { label: "Notetaker", icon: Bot, soon: true },
   { label: "Uploads", icon: Upload, soon: true },

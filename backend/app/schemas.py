@@ -194,3 +194,32 @@ class ChatCitation(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     citations: list[ChatCitation] = []
+
+
+# --- Assistant (unified Adaptive + Agentic RAG) -----------------------------
+class AssistantStep(BaseModel):
+    """One tool call made by the agentic branch (for the visible trace)."""
+
+    tool: str
+    input: str
+    output: str
+
+
+class AssistantArtifact(BaseModel):
+    """A downloadable text deliverable produced by a tool (e.g. export-to-text)."""
+
+    filename: str
+    content: str
+
+
+class AssistantRequest(BaseModel):
+    question: str
+    history: Optional[list[ChatMessage]] = None
+
+
+class AssistantResponse(BaseModel):
+    answer: str
+    route: str  # which branch fired: no_retrieval | single_meeting | semantic_all | agentic
+    citations: list[ChatCitation] = []
+    steps: list[AssistantStep] = []
+    artifact: Optional[AssistantArtifact] = None

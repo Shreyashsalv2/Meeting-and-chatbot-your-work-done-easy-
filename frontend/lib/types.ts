@@ -96,6 +96,32 @@ export interface ChatResponse {
   citations: ChatCitation[];
 }
 
+// --- Unified assistant (Adaptive + Agentic RAG) ---
+export type AssistantRoute =
+  | "no_retrieval"
+  | "single_meeting"
+  | "semantic_all"
+  | "agentic";
+
+export interface AssistantStep {
+  tool: string;
+  input: string;
+  output: string;
+}
+
+export interface AssistantArtifact {
+  filename: string;
+  content: string;
+}
+
+export interface AssistantResponse {
+  answer: string;
+  route: AssistantRoute | string;
+  citations: ChatCitation[];
+  steps: AssistantStep[];
+  artifact?: AssistantArtifact | null;
+}
+
 // --- Request payloads ---
 export interface ParticipantInput {
   name: string;

@@ -2,6 +2,7 @@
 import type {
   ActionItem,
   ActionItemInput,
+  AssistantResponse,
   ChatResponse,
   MeetingCreateInput,
   MeetingDetail,
@@ -104,4 +105,14 @@ export const api = {
 
   exportUrl: (id: number, format: "md" | "txt") =>
     `${API_BASE}/meetings/${id}/export?format=${format}`,
+
+  // Unified assistant — Adaptive RAG router (+ Agentic RAG tool subgraph).
+  askAssistant: (
+    question: string,
+    history: { role: string; content: string }[] = [],
+  ) =>
+    request<AssistantResponse>(`/assistant`, {
+      method: "POST",
+      body: JSON.stringify({ question, history }),
+    }),
 };

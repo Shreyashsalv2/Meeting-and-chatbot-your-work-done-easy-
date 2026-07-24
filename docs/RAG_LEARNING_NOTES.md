@@ -185,8 +185,52 @@ On `/search`, switch to **Semantic** and search *"reduce customer churn and keep
 engaged"*. Keyword mode → **0 results** (no literal match). Semantic mode → the onboarding,
 activation, and marketing moments, each deep-linking into the transcript.
 
-## 4. RAG #2 — Adaptive RAG (the unified assistant's router)  ⏳ Phase D
-_To be written when built._
+## 4. RAG #2 — Adaptive RAG (the unified assistant's router)  ✅ Phase D
+
+**File:** [`backend/app/services/rag/adaptive_rag.py`](../backend/app/services/rag/adaptive_rag.py) ·
+**Wired at:** `POST /api/assistant` (`routers/assistant.py`) · **UI:** new `/assistant` page (`AssistantChat.tsx`)
+
+### The idea
+Not every question deserves a retrieval. "Hi" needs none; "what caused the outage in the
+Weekly Sync?" needs *one* meeting; "action items about onboarding across meetings?" needs *all*
+of them; "draft me a doc" needs *tools*. **Adaptive RAG routes first**, then does the minimum
+work that answers the question. This is also the app's single "assistant" surface — the router
+*is* the brain, and the agent (RAG #4) is just one of its branches.
+
+### The graph
+```
+START → route_query ──┬─ no_retrieval ─► answer_direct ─────────► END
+                      ├─ single_meeting ► retrieve_single ► generate ► END
+                      ├─ semantic_all ──► retrieve_all ► generate ► END
+                      └─ agentic ───────► run_agent ──────────────► END
+```
+- **`route_query`** → the classifier. We feed it the question, recent history, **and the list of
+  meetings (id + title)**. It returns JSON `{"route": ..., "meeting_id": ...}`. Giving it the
+  meeting list is what lets `single_meeting` know *which* meeting to focus (it returns the id).
+  If it picks `single_meeting` but can't name one, we downgrade to `semantic_all`.
+- **`answer_direct`** → replies without any retrieval (greetings/meta).
+- **`retrieve_single` / `retrieve_all`** → the same `similarity_search`, the only difference is
+  the `meeting_id` filter. Both flow into one `generate` node.
+- **`generate`** → answers from context with cross-meeting citations + a `route` badge.
+- **`run_agent`** → the seam to RAG #4 (Phase E). In Phase D it's a stub that falls back to a
+  semantic answer.
+
+### One conversation, not two modes
+The endpoint returns **one stable shape**: `{answer, route, citations, steps, artifact}`. The UI
+shows a **route badge** (so you can *see* the router's decision), cross-meeting citation chips
+that deep-link into transcripts, and — already wired but empty until Phase E — a tool-step trace
+and a download button. Because the shape is fixed, Phase E adds the agent with **zero** frontend
+changes.
+
+### Why this is good design (OCP in action)
+`run_agent` tries to `import agentic_rag` and call it; if that module isn't there yet, it falls
+back. So Phase E adds a whole new capability by *adding a file*, not editing the router. Same
+story for routes: they're keys in a dict, not hard-coded branches.
+
+### Verify
+On `/assistant`: "hi" → **Direct answer** badge, no citations. "In the Weekly Engineering Sync,
+what caused the outage?" → **One meeting** badge, citations only from that meeting. "What did we
+decide about onboarding across all meetings?" → **All meetings** badge, citations spanning several.
 
 ## 5. RAG #4 — Agentic RAG (tool-calling agent subgraph)  ⏳ Phase E
 _To be written when built._
@@ -230,6 +274,16 @@ teaching pass.
   flaky grader degrades to naive RAG instead of breaking the chat.
 - **`groq` 0.37.1 live path re-verified** (Phase B): Self-RAG calls Groq via `ChatGroq` and the
   existing `groq_service` still works — the earlier version downgrade caused no issues.
+- **Routing needs to know *which* meeting** (Phase D). `single_meeting` is useless if the router
+  can't identify the target. Fix: pass the meeting list (id + title) into the classifier prompt and
+  have it return the `meeting_id`; if it can't, downgrade to `semantic_all`. Lesson: a router is
+  only as good as the context you give it to decide with.
+- **Making the agent branch additive** (Phase D). The router's `run_agent` node imports the
+  (not-yet-existing) `agentic_rag` module inside a `try/except` and falls back. So Phase E adds the
+  agent by creating one file — no edits to the router. This is the Open/Closed principle paying off.
+- **Next.js 16 build check** (Phase D). `tsc` type-checks but doesn't validate App-Router page
+  wiring; `next build` does. Ran it to confirm the new `/assistant` route compiles (it did) — worth
+  doing whenever you add a route in this Next 16 project.
 
 ### Anticipated (watch for these in later phases)
 - Extra LLM calls (grading, routing, multi-query, agent steps) eat Groq tokens/latency → keep
