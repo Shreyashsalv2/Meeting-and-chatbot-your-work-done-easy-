@@ -232,8 +232,71 @@ On `/assistant`: "hi" → **Direct answer** badge, no citations. "In the Weekly 
 what caused the outage?" → **One meeting** badge, citations only from that meeting. "What did we
 decide about onboarding across all meetings?" → **All meetings** badge, citations spanning several.
 
-## 5. RAG #4 — Agentic RAG (tool-calling agent subgraph)  ⏳ Phase E
-_To be written when built._
+## 5. RAG #4 — Agentic RAG (tool-calling agent subgraph)  ✅ Phase E
+
+**File:** [`backend/app/services/rag/agentic_rag.py`](../backend/app/services/rag/agentic_rag.py) ·
+**Reached via:** the Adaptive router's `agentic` branch (`POST /api/assistant`) · **UI:** the same `/assistant` chat (step trace + download)
+
+### The idea
+Every RAG before this ran a pipeline *we* designed. An **agent** flips it: we give the LLM
+tools and let *it* plan. It looks at the question, calls a tool, sees the result, decides the
+next tool, and loops until it can answer. The control flow is emergent, not hard-coded — that's
+what "agentic" means.
+
+### The graph (the ReAct loop)
+```
+START → agent → (asked for a tool?) ──yes──► tools → agent → …  (repeat, bounded)
+                                    └──no──► END
+```
+- **`agent`** → `ChatGroq.bind_tools([...])`. The model replies either with a final answer *or*
+  with `tool_calls`.
+- **`tools`** → we execute each requested tool and feed the results back as `ToolMessage`s.
+- **`should_continue`** → loops back to `agent` while there are tool calls *and* we're under
+  `agent_max_steps` (the runaway-loop guard).
+
+### The three tools (1 custom retriever + 1 pre-made + 1 custom action)
+| Tool | Kind | What it does |
+|---|---|---|
+| `search_meetings` | **custom** | Retrieves from the user's transcripts (our vector store). This is the "RAG" inside the agent, and it's what fills the **citations**. |
+| `wikipedia` | **pre-made** | LangChain's `WikipediaQueryRun` — external background, no key/OAuth. |
+| `export_meeting_text` | **custom** | Reuses the app's existing export builder (`routers/export._render_text`) to produce a **downloadable text doc**, returned as the `artifact`. |
+
+"Next tool depends on the last result" is real here: *"search my meetings for the outage, then
+explain the term via Wikipedia"* → the agent runs `search_meetings`, reads what it found, then
+calls `wikipedia` on the term — we didn't wire that order, it decided.
+
+### How steps / citations / artifact get out of the agent
+Tools return *strings* to the LLM, but the UI wants structure. So the tools are **closures**
+defined inside `run()` that also append to local `citations` / `artifact` lists, and the `tools`
+node records each call into `steps`. All three come back in the response, and the assistant UI
+(built in Phase D) already renders them: a **route badge**, an expandable **tool-step trace**,
+and a **Download** button for the artifact — zero new frontend code.
+
+### Two real bugs we hit (see gotchas)
+1. The agent guessed **wrong meeting ids** — fixed by handing it the `id: title` list in its
+   prompt (a router already had it).
+2. Groq's llama-3.3-70b sometimes emits a **malformed tool call** → 400 `tool_use_failed` —
+   fixed with a retry-then-answer-without-tools fallback so the agent never dead-ends.
+
+### Verify
+On `/assistant`: *"Draft and export a document for the Weekly Engineering Sync meeting"* → an
+**Agent + tools** badge, a `export_meeting_text` step, and a **Download** button for
+`weekly-engineering-sync.txt`. *"Search my meetings for the outage, then explain a statement
+timeout via Wikipedia"* → a two-step trace (`search_meetings` → `wikipedia`) + citations.
+
+---
+
+## Recap: the four techniques side by side
+
+| RAG | Core move | LangGraph shape | Where |
+|---|---|---|---|
+| **Self-RAG** | reflect: grade docs & grade own answer, retry | loop with self-critique | per-meeting chat |
+| **RAG-Fusion** | multi-query + reciprocal rank fusion | fan-out → fuse | `/search` semantic |
+| **Adaptive RAG** | route to the cheapest strategy | router with branches | `/assistant` brain |
+| **Agentic RAG** | let the LLM pick tools in a loop | ReAct agent ↔ tools | `/assistant` agent branch |
+
+Same foundation under all four (§1); each adds one idea. That's the whole point — RAG isn't one
+thing, it's a family of control-flow patterns over retrieval, and LangGraph is how you express them.
 
 ---
 
@@ -284,6 +347,20 @@ teaching pass.
 - **Next.js 16 build check** (Phase D). `tsc` type-checks but doesn't validate App-Router page
   wiring; `next build` does. Ran it to confirm the new `/assistant` route compiles (it did) — worth
   doing whenever you add a route in this Next 16 project.
+- **Groq `tool_use_failed` 400** (Phase E). llama-3.3-70b occasionally emits a malformed tool call
+  (`<function=name{...}>` instead of JSON) and Groq rejects the whole request with a 400. Fix: catch
+  it in the agent node, retry once (sampling may fix it), then fall back to a **no-tools** answer so
+  the agent still responds from whatever it already gathered. Lesson: open-weights tool-calling is
+  not 100% reliable — the agent loop must tolerate a bad tool turn.
+- **The agent guessed wrong meeting ids** (Phase E). Asked to export "the Weekly Engineering Sync",
+  it *searched* for that title and picked ids 5 then 23 (wrong / nonexistent) because a title isn't
+  in the transcript text, so semantic search doesn't reliably map title→id. Fix: put the actual
+  `id: title` list in the agent's system prompt. Lesson: don't make an agent *derive* facts you
+  already have — give them to it.
+- **Getting structured data out of string-returning tools** (Phase E). Tools return strings to the
+  LLM, but the UI needs citations/artifact objects. Solution: define the tools as **closures inside
+  `run()`** that append to local lists, so each call records structured output as a side effect
+  while still returning a string to the model.
 
 ### Anticipated (watch for these in later phases)
 - Extra LLM calls (grading, routing, multi-query, agent steps) eat Groq tokens/latency → keep

@@ -132,7 +132,9 @@ def _run_agent(state: AssistantState) -> dict:
     try:
         from . import agentic_rag  # noqa: F401  (present from Phase E)
 
-        return agentic_rag.run(state["question"], state.get("history"))
+        return agentic_rag.run(
+            state["question"], state.get("history"), state.get("meetings_index")
+        )
     except Exception:  # noqa: BLE001 - Phase D: no agent yet → fall back to semantic answer
         docs = vs.similarity_search(state["question"])
         context = "\n\n".join(d.page_content for d in docs)
