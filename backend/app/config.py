@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Empty by default so the app runs fully offline with a mock fallback.
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    # Cheap/fast model with a SEPARATE (larger) daily token budget. Used for the many
+    # auxiliary calls (routing, grading, multi-query) and as the fallback when the main
+    # model is rate-limited, so the assistant keeps working instead of going dark.
+    groq_fast_model: str = "llama-3.1-8b-instant"
 
     # --- RAG (LangChain + LangGraph) ---
     # Local, no-key embeddings via fastembed (ONNX — no torch). This is the single
@@ -36,7 +40,7 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 500             # chars per transcript chunk
     rag_top_k: int = 5                    # retrieved chunks per query
     self_rag_max_retries: int = 1         # query-rewrite retries in Self-RAG
-    agent_max_steps: int = 6              # tool-call cap in Agentic RAG
+    agent_max_steps: int = 4              # tool-call cap in Agentic RAG (lower = fewer tokens)
 
     # Task-based generation temperature: precise for factual/actionable work,
     # warmer for creative work. The assistant classifies the task and picks one.

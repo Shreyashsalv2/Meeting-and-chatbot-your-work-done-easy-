@@ -58,10 +58,6 @@ _GEN_SYSTEM = (
 )
 
 
-def _llm(temperature: float = 0.0):
-    return vs.get_llm(temperature=temperature)
-
-
 # --- Nodes -------------------------------------------------------------------
 def _retrieve(state: SelfRAGState) -> dict:
     docs = vs.similarity_search(state["question"], meeting_id=state["meeting_id"])
@@ -82,7 +78,7 @@ def _grade_documents(state: SelfRAGState) -> dict:
         "If none are relevant, reply 'none'."
     )
     try:
-        raw = _llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
+        raw = vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
     except Exception as exc:  # noqa: BLE001 - fail open (keep all) on grader error
         logger.warning("grade_documents failed: %s", exc)
         return {"documents": docs}
@@ -101,7 +97,7 @@ def _transform_query(state: SelfRAGState) -> dict:
         f"Question: {state['original']}"
     )
     try:
-        better = (_llm(0.0).invoke([HumanMessage(content=prompt)]).content or "").strip()
+        better = (vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or "").strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("transform_query failed: %s", exc)
         better = state["question"]
@@ -122,7 +118,7 @@ def _generate(state: SelfRAGState) -> dict:
         messages.append(HumanMessage(content=content) if role == "user" else AIMessage(content=content))
     messages.append(HumanMessage(content=state["original"]))
 
-    answer = (_llm(0.2).invoke(messages).content or "").strip()
+    answer = vs.resilient_invoke(messages, 0.2)
     citations = _build_citations(docs, answer)
     return {"generation": answer or "I don't know based on this meeting.", "citations": citations}
 
@@ -183,7 +179,7 @@ def _grade_generation(state: SelfRAGState) -> str:
         f"QUESTION: {state['original']}\n\nCONTEXT:\n{context}\n\nANSWER:\n{answer}"
     )
     try:
-        raw = (_llm(0.0).invoke([HumanMessage(content=prompt)]).content or "").lower()
+        raw = (vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or "").lower()
     except Exception as exc:  # noqa: BLE001 - fail open (accept) on grader error
         logger.warning("grade_generation failed: %s", exc)
         return "end"
@@ -249,6 +245,8 @@ def answer(
             }
         )
         return {"answer": final.get("generation", ""), "citations": final.get("citations", [])}
+    except vs.RateLimited as rl:
+        return {"answer": vs.rate_limit_message(rl.retry_hint), "citations": []}
     except Exception as exc:  # noqa: BLE001 - never crash the endpoint
         logger.warning("Self-RAG failed (%s); falling back to naive chat.", exc)
         if fallback_transcript is not None:

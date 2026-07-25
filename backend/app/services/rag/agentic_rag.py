@@ -39,7 +39,7 @@ from . import vector_store as vs
 logger = logging.getLogger(__name__)
 
 _wiki = WikipediaQueryRun(
-    api_wrapper=WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=800)
+    api_wrapper=WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=500)
 )
 
 # Action categories we do NOT have integrations for yet (pending OAuth). Shrink this
@@ -192,13 +192,26 @@ def run(
         try:
             return {"messages": [llm.invoke(msgs)]}
         except Exception as exc:  # noqa: BLE001
+            if vs.is_rate_limit(exc):
+                # Main model out of daily budget → keep tool-calling on the fast model.
+                try:
+                    fast = vs.get_fast_llm(agent_temp).bind_tools(tools)
+                    return {"messages": [fast.invoke(msgs)]}
+                except Exception as exc2:  # noqa: BLE001
+                    if vs.is_rate_limit(exc2):
+                        raise vs.RateLimited(
+                            vs.rate_limit_retry_hint(exc2) or vs.rate_limit_retry_hint(exc)
+                        ) from exc2
             if "tool_use_failed" in str(exc):
                 try:
                     return {"messages": [llm.invoke(msgs)]}  # one retry (stochastic)
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                return {"messages": [vs.get_llm(0.2).invoke(msgs)]}  # answer without tools
+                # Answer without tools, strong→fast fallback (may raise RateLimited).
+                return {"messages": [AIMessage(content=vs.resilient_invoke(msgs, 0.2))]}
+            except vs.RateLimited:
+                raise
             except Exception:  # noqa: BLE001
                 return {"messages": [AIMessage(content="I couldn't complete that tool step.")]}
 
@@ -243,6 +256,13 @@ def run(
     try:
         final = graph.invoke({"messages": messages})
         answer = (final["messages"][-1].content or "").strip()
+    except vs.RateLimited as rl:
+        return {
+            "generation": vs.rate_limit_message(rl.retry_hint),
+            "citations": citations[:5],
+            "steps": steps,
+            "artifact": artifact or None,
+        }
     except Exception as exc:  # noqa: BLE001 - never crash the assistant
         logger.warning("Agentic RAG failed: %s", exc)
         return {

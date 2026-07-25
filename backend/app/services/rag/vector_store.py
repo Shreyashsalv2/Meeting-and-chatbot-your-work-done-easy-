@@ -48,17 +48,76 @@ def llm_available() -> bool:
 
 
 def get_llm(temperature: float = 0.2, **kwargs):
-    """A ChatGroq instance. Raises if no key — callers guard with ``llm_available``."""
+    """The main (strong) ChatGroq. Raises if no key — callers guard with ``llm_available``."""
+    return _chat_groq(settings.groq_model, temperature, **kwargs)
+
+
+def get_fast_llm(temperature: float = 0.0, **kwargs):
+    """The cheap/fast ChatGroq (separate daily budget). For routing/grading + fallback."""
+    return _chat_groq(settings.groq_fast_model, temperature, **kwargs)
+
+
+def _chat_groq(model: str, temperature: float, **kwargs):
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY not configured")
     from langchain_groq import ChatGroq
 
     return ChatGroq(
-        model=settings.groq_model,
+        model=model,
         api_key=settings.groq_api_key,
         temperature=temperature,
         **kwargs,
     )
+
+
+# --- Rate-limit resilience ---------------------------------------------------
+class RateLimited(Exception):
+    """Raised when both the main and fast models are rate-limited. Carries a hint."""
+
+    def __init__(self, retry_hint: Optional[str] = None):
+        self.retry_hint = retry_hint
+        super().__init__("Groq rate limit reached on all models")
+
+
+def is_rate_limit(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return "429" in s or "rate_limit" in s or "rate limit" in s
+
+
+def rate_limit_retry_hint(exc: Exception) -> Optional[str]:
+    """Extract Groq's 'try again in X' hint, if present."""
+    import re
+
+    m = re.search(r"try again in ([0-9hms\.]+)", str(exc))
+    return m.group(1) if m else None
+
+
+def rate_limit_message(hint: Optional[str] = None) -> str:
+    """User-facing message when the AI is rate-limited (shared across the RAG modules)."""
+    when = f" Please try again in ~{hint}." if hint else " Please try again in a few minutes."
+    return (
+        "⏳ The shared AI key has hit today's usage limit, so I can't answer right now."
+        f"{when} (This is a free-tier quota, not a bug — it resets on a daily schedule.)"
+    )
+
+
+def resilient_invoke(messages, temperature: float = 0.2):
+    """Invoke the strong model; on a rate limit, transparently retry on the fast model.
+
+    Returns the response's text content. Raises ``RateLimited`` only if BOTH models are
+    rate-limited, so the app degrades (strong → fast) before it ever fails."""
+    try:
+        return (get_llm(temperature).invoke(messages).content or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        if not is_rate_limit(exc):
+            raise
+        hint = rate_limit_retry_hint(exc)
+        try:
+            return (get_fast_llm(temperature).invoke(messages).content or "").strip()
+        except Exception as exc2:  # noqa: BLE001
+            if is_rate_limit(exc2):
+                raise RateLimited(rate_limit_retry_hint(exc2) or hint) from exc2
+            raise
 
 
 @lru_cache(maxsize=1)

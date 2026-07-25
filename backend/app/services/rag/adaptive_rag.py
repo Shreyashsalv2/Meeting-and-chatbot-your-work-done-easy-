@@ -120,7 +120,7 @@ def _route_query(state: AssistantState) -> dict:
     route, meeting_id = "semantic_all", None
     task_kind, offer_download = "factual", False
     try:
-        raw = vs.get_llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
+        raw = vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group(0)) if m else {}
         cand = str(data.get("route", "")).strip()
@@ -166,13 +166,13 @@ def _generate(state: AssistantState) -> dict:
         for d in docs
     )
     messages = _with_history(f"{_ANSWER_SYSTEM}\n\nContext:\n{context or '(none)'}", state)
-    answer = (vs.get_llm(temp_for(state.get("task_kind"))).invoke(messages).content or "").strip()
+    answer = vs.resilient_invoke(messages, temp_for(state.get("task_kind")))
     return {"generation": answer, "citations": _citations(docs), "offers": _build_offers(state)}
 
 
 def _answer_direct(state: AssistantState) -> dict:
     messages = _with_history(_DIRECT_SYSTEM, state)
-    answer = (vs.get_llm(temp_for(state.get("task_kind"))).invoke(messages).content or "").strip()
+    answer = vs.resilient_invoke(messages, temp_for(state.get("task_kind")))
     return {"generation": answer, "citations": [], "offers": _build_offers(state)}
 
 
@@ -187,11 +187,13 @@ def _run_agent(state: AssistantState) -> dict:
             state.get("meetings_index"),
             temperature=temp_for(state.get("task_kind")),
         )
-    except Exception:  # noqa: BLE001 - Phase D: no agent yet → fall back to semantic answer
+    except vs.RateLimited:
+        raise
+    except Exception:  # noqa: BLE001 - fall back to a semantic answer
         docs = vs.similarity_search(state["question"])
         context = "\n\n".join(d.page_content for d in docs)
         messages = _with_history(f"{_ANSWER_SYSTEM}\n\nContext:\n{context or '(none)'}", state)
-        answer = (vs.get_llm(0.2).invoke(messages).content or "").strip()
+        answer = vs.resilient_invoke(messages, 0.2)
         return {"generation": answer, "citations": _citations(docs)}
 
 
@@ -289,6 +291,16 @@ def answer(
             "steps": final.get("steps", []),
             "artifact": final.get("artifact"),
             "offers": final.get("offers", []),
+        }
+    except vs.RateLimited as rl:
+        return {
+            "answer": vs.rate_limit_message(rl.retry_hint),
+            "route": "no_retrieval",
+            "task_kind": None,
+            "citations": [],
+            "steps": [],
+            "artifact": None,
+            "offers": [],
         }
     except Exception as exc:  # noqa: BLE001 - never crash the endpoint
         logger.warning("Adaptive RAG failed: %s", exc)

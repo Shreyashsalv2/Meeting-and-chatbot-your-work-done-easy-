@@ -50,7 +50,7 @@ def _generate_queries(state: FusionState) -> dict:
         f"Question: {q}"
     )
     try:
-        raw = vs.get_llm(0.3).invoke([HumanMessage(content=prompt)]).content or ""
+        raw = vs.get_fast_llm(0.3).invoke([HumanMessage(content=prompt)]).content or ""
         alts = [ln.strip("-• ").strip() for ln in raw.splitlines() if ln.strip()]
     except Exception as exc:  # noqa: BLE001 - degrade to single-query semantic search
         logger.warning("multi-query generation failed: %s", exc)

@@ -391,6 +391,49 @@ future OAuth phase: when real action tools land, they slot into the same agent a
 
 ---
 
+## Follow-up: surviving Groq rate limits (per-model budgets, 8B fallback, honest errors)
+
+**Files:** `config.py` (`groq_fast_model`, `agent_max_steps` 6→4), `vector_store.py` (`get_fast_llm`,
+`resilient_invoke`, `RateLimited`, `rate_limit_*`), plus `adaptive_rag.py` / `self_rag.py` / `fusion_rag.py` /
+`agentic_rag.py` (route cheap calls to 8B; honest messages).
+
+### What broke, and why
+The assistant went fully non-responsive — "Sorry, I couldn't answer that just now" / "I couldn't complete that
+tool step" on *everything*. The log showed the real cause: **Groq's free-tier daily token cap** for
+`llama-3.3-70b-versatile` was exhausted (`429 … tokens per day (TPD): Limit 100000, Used ~99737`). Our RAG stack
+fires *many* 70B calls per turn (router + graders + multi-query + the agent loop), so heavy use drained the day's
+budget; after that every call 429'd and fell through to the generic error strings. **Not a code bug — a quota.**
+
+### The fix (two ideas)
+1. **Rate limits are per-model.** `llama-3.1-8b-instant` has a *separate, larger* daily budget. So the cheap
+   "housekeeping" calls (routing, Self-RAG graders, RAG-Fusion multi-query) now run on **8B** via `get_fast_llm`,
+   and only user-facing final generation + the agent's tool-calling use 70B. This alone makes the 70B budget last
+   far longer.
+2. **Degrade, don't die.** `resilient_invoke()` tries 70B and, on a 429, transparently retries the *same*
+   messages on 8B — so when 70B is capped the assistant keeps answering (lower quality) instead of erroring. The
+   agent does the same (rebinds tools to 8B). Only when **both** models are rate-limited do we raise a typed
+   `RateLimited`, which the entry points turn into an **honest** message: "⏳ hit today's usage limit, try again
+   in ~X min (free-tier quota, not a bug)" — parsed from Groq's own retry hint.
+
+Also trimmed tokens: `agent_max_steps` 6→4, wiki payload 800→500 chars.
+
+### Verified
+Live (with 70B exhausted): the assistant **responds** on the 8B fallback instead of erroring. Simulated
+both-models-limited: returns the honest "try again in ~5m0s" message. Retrieval unaffected (embeddings don't use
+the LLM).
+
+### Gotchas / lessons
+- **Token-hungry graphs meet free tiers.** Multi-call RAG (grade + route + fuse + agent loops) burns quota fast.
+  Push every non-user-facing call to the cheapest model that can do it.
+- **Per-model budgets are a feature.** Splitting work across `70b` and `8b-instant` doubles effective headroom
+  and gives a natural fallback tier.
+- **Fail honestly.** An opaque "Sorry" made a *quota* problem look like a broken app. Parsing the provider's
+  retry hint and saying "it's a daily limit, back in X min" is the difference between "broken" and "busy".
+- **Degraded ≠ dead.** Falling back to a weaker model keeps the product usable during exhaustion; note the
+  quality dip is expected.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the
