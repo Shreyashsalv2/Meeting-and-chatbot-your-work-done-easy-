@@ -212,6 +212,13 @@ class AssistantArtifact(BaseModel):
     content: str
 
 
+class AssistantOffer(BaseModel):
+    """A proactive suggestion chip. Clicking it sends ``prompt`` back as a message."""
+
+    label: str
+    prompt: str
+
+
 class AssistantRequest(BaseModel):
     question: str
     history: Optional[list[ChatMessage]] = None
@@ -220,6 +227,8 @@ class AssistantRequest(BaseModel):
 class AssistantResponse(BaseModel):
     answer: str
     route: str  # which branch fired: no_retrieval | single_meeting | semantic_all | agentic
+    task_kind: Optional[str] = None  # factual | actionable | creative
     citations: list[ChatCitation] = []
     steps: list[AssistantStep] = []
     artifact: Optional[AssistantArtifact] = None
+    offers: list[AssistantOffer] = []

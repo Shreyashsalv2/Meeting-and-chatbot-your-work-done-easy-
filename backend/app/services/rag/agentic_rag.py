@@ -44,13 +44,25 @@ _wiki = WikipediaQueryRun(
 
 _AGENT_SYSTEM = (
     "You are an assistant for a meeting-notes app, acting as an agent with tools.\n"
-    "- Use `search_meetings` to ground answers in the user's own meetings (always prefer this "
-    "for anything about their meetings).\n"
-    "- Use `wikipedia` ONLY for external background on a concept/term the meetings don't explain.\n"
-    "- Use `export_meeting_text` when the user asks to draft, produce, or export a document for a "
-    "specific meeting (you'll need its numeric id — find it via search first).\n"
-    "Call tools as needed, then give a concise final answer that references meetings by title. "
-    "Do not invent meeting content."
+    "Tools:\n"
+    "- `search_meetings`: ground answers in the user's own meetings. Prefer this for anything "
+    "about their meetings.\n"
+    "- `wikipedia`: fetch external background on a concept/term the meetings don't explain.\n"
+    "- `create_document`: save a COMPOSED deliverable you write yourself as a downloadable "
+    "document (NOT a raw transcript).\n"
+    "- `export_meeting_text`: the raw full-meeting export (transcript + summary + action items + "
+    "topics) for a meeting id — use ONLY when the user explicitly wants the whole meeting.\n\n"
+    "Deliverables the user may want, and how to produce them:\n"
+    "1. RESEARCH / PREP BRIEF (default for actionable work) → `search_meetings` for the relevant "
+    "action items/context, then `wikipedia` to research the key topic/concept, then "
+    "`create_document` whose content is a synthesized brief = the meeting-grounded action items "
+    "PLUS the Wikipedia findings, written as prose. Do NOT paste the transcript.\n"
+    "2. CHAT SUMMARY → summarize the conversation so far, then `create_document` with that recap "
+    "(no external research needed unless asked).\n"
+    "3. FULL MEETING EXPORT → `export_meeting_text(meeting_id)` only when explicitly asked for the "
+    "whole meeting.\n\n"
+    "Call tools as needed, then give a concise final answer referencing meetings by title. Do not "
+    "invent meeting content."
 )
 
 
@@ -62,6 +74,7 @@ def run(
     question: str,
     history: Optional[list[dict]] = None,
     meetings_index: Optional[list[dict]] = None,
+    temperature: Optional[float] = None,
 ) -> dict:
     """Run the tool-agent. Returns {generation, citations, steps, artifact}. Never raises."""
     if not vs.llm_available():
@@ -111,10 +124,21 @@ def run(
             return f"Wikipedia lookup failed: {exc}"
 
     @tool
+    def create_document(title: str, content: str) -> str:
+        """Save a COMPOSED deliverable you wrote (e.g. a prep/research brief = action items plus
+        external background, or a chat summary) as a downloadable text document. This is NOT a
+        meeting export — do not paste the raw transcript; write the synthesized document body."""
+        from ...routers.export import _slug
+
+        artifact["filename"] = f"{_slug(title)}.txt"
+        artifact["content"] = content
+        return f"Saved '{title}' as {artifact['filename']} (offered to the user as a download)."
+
+    @tool
     def export_meeting_text(meeting_id: int) -> str:
-        """Produce a downloadable plain-text document (summary + action items + full
-        transcript) for a meeting, given its numeric id. Offer this when the user wants a
-        draft/export/document."""
+        """Raw full-meeting export (summary + action items + full transcript) for a meeting id.
+        Use ONLY when the user explicitly wants the whole meeting — for composed briefs use
+        create_document instead."""
         from sqlmodel import Session
 
         from ... import models
@@ -133,9 +157,11 @@ def run(
         except Exception as exc:  # noqa: BLE001
             return f"Export failed: {exc}"
 
-    tools = [search_meetings, wikipedia, export_meeting_text]
+    tools = [search_meetings, wikipedia, create_document, export_meeting_text]
     tools_by_name = {t.name: t for t in tools}
-    llm = vs.get_llm(0.1).bind_tools(tools)
+    # Bound temperature: honor the task's warmth but keep tool-calling reliable.
+    agent_temp = min(temperature if temperature is not None else 0.1, 0.4)
+    llm = vs.get_llm(agent_temp).bind_tools(tools)
 
     def agent_node(state: AgentState) -> dict:
         """Invoke the tool-bound LLM, resilient to Groq's occasional malformed tool call.

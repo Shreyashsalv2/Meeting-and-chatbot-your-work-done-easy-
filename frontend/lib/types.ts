@@ -114,12 +114,19 @@ export interface AssistantArtifact {
   content: string;
 }
 
+export interface AssistantOffer {
+  label: string;
+  prompt: string;
+}
+
 export interface AssistantResponse {
   answer: string;
   route: AssistantRoute | string;
+  task_kind?: string | null;
   citations: ChatCitation[];
   steps: AssistantStep[];
   artifact?: AssistantArtifact | null;
+  offers: AssistantOffer[];
 }
 
 // --- Request payloads ---

@@ -8,7 +8,13 @@ import { toast } from "sonner";
 import { Spinner } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
-import type { AssistantArtifact, AssistantResponse, AssistantStep, ChatCitation } from "@/lib/types";
+import type {
+  AssistantArtifact,
+  AssistantOffer,
+  AssistantResponse,
+  AssistantStep,
+  ChatCitation,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Msg = {
@@ -18,6 +24,7 @@ type Msg = {
   citations?: ChatCitation[];
   steps?: AssistantStep[];
   artifact?: AssistantArtifact | null;
+  offers?: AssistantOffer[];
 };
 
 // Guard the shared Groq key on the public site.
@@ -42,8 +49,14 @@ function downloadArtifact(a: AssistantArtifact) {
   const link = document.createElement("a");
   link.href = url;
   link.download = a.filename || "assistant-output.txt";
+  // The link must be in the DOM, and the blob URL must NOT be revoked
+  // synchronously — revoking too early aborts the download before it starts.
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, 200);
 }
 
 export default function AssistantChat() {
@@ -76,6 +89,7 @@ export default function AssistantChat() {
           citations: res.citations,
           steps: res.steps,
           artifact: res.artifact ?? null,
+          offers: res.offers,
         },
       ]);
     } catch {
@@ -193,6 +207,22 @@ export default function AssistantChat() {
               >
                 <Download size={13} /> {m.artifact.filename}
               </button>
+            )}
+
+            {/* Proactive download suggestions (only when nothing was produced yet) */}
+            {m.role === "assistant" && !m.artifact && m.offers && m.offers.length > 0 && (
+              <div className="flex max-w-[85%] flex-wrap gap-1.5">
+                {m.offers.map((o, j) => (
+                  <button
+                    key={j}
+                    onClick={() => send(o.prompt)}
+                    disabled={loading || capped}
+                    className="inline-flex items-center gap-1 rounded-full border border-brand/40 bg-brand-soft px-3 py-1 text-xs font-medium text-brand transition hover:bg-brand hover:text-brand-ink disabled:opacity-50"
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         ))}

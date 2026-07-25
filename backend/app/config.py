@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     self_rag_max_retries: int = 1         # query-rewrite retries in Self-RAG
     agent_max_steps: int = 6              # tool-call cap in Agentic RAG
 
+    # Task-based generation temperature: precise for factual/actionable work,
+    # warmer for creative work. The assistant classifies the task and picks one.
+    temp_factual: float = 0.15
+    temp_actionable: float = 0.3
+    temp_creative: float = 0.6
+
     # --- CORS / frontend ---
     # Production frontend origin (the Vercel URL). Localhost is always allowed.
     frontend_url: str = "http://localhost:3000"

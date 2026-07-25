@@ -318,6 +318,46 @@ in the OpenAPI schema; existing CRUD/chat contracts unchanged.
 
 ---
 
+## Follow-up: context-aware download offers + task-based temperature
+
+**Files:** `adaptive_rag.py` (classify + offers + `temp_for`), `agentic_rag.py` (`create_document`
+tool + task temperature), `AssistantChat.tsx` (chips), `config.py` (temperature tiers).
+
+### The idea
+Two upgrades to the assistant:
+1. **Don't make the user command a download.** When the router senses the answer is *deliverable-worthy*
+   (actionable/creative work), the assistant proactively shows **suggestion chips** — 📄 *Save a research
+   brief* and 📝 *Save a chat summary* — so the user just clicks instead of typing an export command.
+2. **Match the LLM's temperature to the task.** Factual lookups → `0.15` (precise), actionable drafting →
+   `0.3`, creative/ideation → `0.6`.
+
+### How it works (reusing what already exists)
+- The **same** router LLM call now also returns `task_kind` and `offer_download` — no extra latency. `task_kind`
+  → `temp_for()` → the temperature used by `generate` / `answer_direct` / the agent.
+- When `offer_download` is true on a **non-agentic** answer, the response carries `offers` (a list). The UI
+  renders them as chips; clicking one calls the existing `send(offer.prompt)` — so the chip is just a canned
+  message that flows through the normal pipeline. Zero new endpoints or API methods.
+- The chip's prompt is an **action**, so the router sends it to the `agentic` branch, where a **new
+  `create_document(title, content)` tool** saves a *composed* deliverable. The agent writes the body itself:
+  for a research brief it runs `search_meetings → wikipedia → create_document` (so Wikipedia is now part of the
+  actionable pipeline); for a chat summary it summarizes the conversation. This is deliberately **distinct from
+  `export_meeting_text`**, which still dumps the whole meeting transcript — three separate downloads, not one.
+
+### Gotchas
+- **Actionable phrasing can skip the offer.** "Prepare a plan" is classified as an *action* → routes straight to
+  `agentic` (no chip). The chip is for actionable *Q&A* ("what are the action items?"). Both are valid; the chip
+  just covers the case where the user didn't explicitly ask for a file.
+- **llama sometimes answers without calling tools** even when it should draft/save. The chip's prompt is very
+  explicit ("Research this and save a downloadable prep brief"), which makes tool use reliable; the bare
+  "prepare a plan" phrasing is where it occasionally no-ops.
+- **Agent temperature is clamped to ≤ 0.4** even for creative tasks — higher temperatures make Groq's
+  tool-calling emit malformed calls more often (`tool_use_failed`). Precise generation gets the full range; the
+  tool-using agent stays conservative.
+- **The `agent_max_steps` cap bounds cycles, not raw steps** — one agent turn can request several tools at once,
+  so you may see more than `agent_max_steps` entries in the trace. Still bounded, just not 1:1.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the
