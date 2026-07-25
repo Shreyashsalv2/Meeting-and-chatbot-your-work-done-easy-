@@ -95,22 +95,41 @@ export default function AssistantChat() {
     ]);
     setInput("");
     setLoading(true);
+
+    let gotToken = false;
     try {
-      await api.askAssistantStream(q, history, {
-        onToken: (t) => patchLast((prev) => ({ content: prev.content + t })),
-        onMeta: (meta) =>
-          patchLast({
-            route: meta.route,
-            citations: meta.citations,
-            steps: meta.steps,
-            artifact: meta.artifact ?? null,
-            offers: meta.offers,
-          }),
-      });
-      // If the stream produced nothing, show a fallback.
-      patchLast((prev) => ({
-        content: prev.content || "Sorry, I couldn't answer that just now.",
-      }));
+      // Preferred path: streaming.
+      try {
+        await api.askAssistantStream(q, history, {
+          onToken: (t) => {
+            gotToken = true;
+            patchLast((prev) => ({ content: prev.content + t }));
+          },
+          onMeta: (meta) =>
+            patchLast({
+              route: meta.route,
+              citations: meta.citations,
+              steps: meta.steps,
+              artifact: meta.artifact ?? null,
+              offers: meta.offers,
+            }),
+        });
+      } catch {
+        /* streaming failed (e.g. 404 during a deploy, SSE buffering) — fall back below */
+      }
+
+      // Fallback: if streaming yielded nothing, use the reliable non-streaming endpoint.
+      if (!gotToken) {
+        const res = await api.askAssistant(q, history);
+        patchLast({
+          content: res.answer || "Sorry, I couldn't answer that just now.",
+          route: res.route,
+          citations: res.citations,
+          steps: res.steps,
+          artifact: res.artifact ?? null,
+          offers: res.offers,
+        });
+      }
     } catch {
       toast.error("Couldn't get an answer — try again.");
       patchLast((prev) => ({
