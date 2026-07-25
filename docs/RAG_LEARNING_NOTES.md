@@ -358,6 +358,39 @@ Two upgrades to the assistant:
 
 ---
 
+## Follow-up: capability-aware assistant (honest limits + Wikipedia how-to)
+
+**Files:** `agentic_rag.py` (`_UNSUPPORTED_ACTIONS` + `_AGENT_SYSTEM`), `adaptive_rag.py` (route), `AssistantChat.tsx` (copy).
+
+### The idea
+The `/assistant` agent is the **command center** — the user should do everything from here. But some actions
+need integrations we don't have yet (Calendar, email, task trackers — pending OAuth). Instead of failing or
+pretending, the agent is now **capability-aware**: when asked for something it can't do, it (1) honestly says it
+lacks that integration, (2) uses **Wikipedia as a how-to helper** to research how it's done, (3) gives
+step-by-step guidance, and (4) produces what it *can* — e.g. drafts the email text and saves it via
+`create_document`. So the user stays in one place even for not-yet-automated actions. This is the bridge to the
+future OAuth phase: when real action tools land, they slot into the same agent and shrink `_UNSUPPORTED_ACTIONS`.
+
+### How it works
+- `_AGENT_SYSTEM` now spells out **what it CAN do** and **what it CANNOT do yet** (`_UNSUPPORTED_ACTIONS`, a
+  single editable constant), plus the fallback rule (decline honestly → Wikipedia how-to → guidance → draft).
+- The router's `agentic` branch was broadened so "do X / schedule / email / remind" requests reach the agent
+  (that's where the capability-aware handling lives).
+- Verified: "email the action items" → honest decline + `wikipedia`/`create_document` → downloadable draft;
+  "schedule a meeting" → honest decline + clean step-by-step guidance; **never falsely claims to have acted**.
+
+### Gotchas
+- **The model narrates its tool plan.** llama would write "First I'll `search_meetings`, then `wikipedia`…"
+  straight into the answer (ugly, leaks tool names). Fix: an explicit "do NOT narrate your plan or write tool
+  names/backticks — use tools silently and present the result" line in the prompt. Cleared the leakage.
+- **Simple how-tos skip Wikipedia.** For common-knowledge actions (scheduling a meeting) the model answers from
+  its own knowledge (steps=[]) rather than calling Wikipedia. That's fine — the honest decline + clean guidance
+  is what matters; Wikipedia fires when the how-to genuinely needs external detail (e.g. email best practices).
+- **Honesty is prompt-enforced, not guaranteed.** We assert in tests that the answer never says "I've
+  scheduled/sent…". Worth a periodic check if the prompt changes.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the

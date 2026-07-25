@@ -103,8 +103,9 @@ def _route_query(state: AssistantState) -> dict:
         '- "no_retrieval": greeting/small talk, or not about meeting content.\n'
         '- "single_meeting": about ONE specific meeting from the list (give its id).\n'
         '- "semantic_all": about meeting content generally, or spanning meetings.\n'
-        '- "agentic": the user wants an ACTION — look something up externally, and/or '
-        "produce/draft/save/export a document.\n"
+        '- "agentic": the user wants an ACTION or task done — e.g. schedule/send/remind/'
+        "add-to-tracker, help me do X, look something up externally, or produce/draft/save/export "
+        "a document. Route here even if we might not have a tool for the action.\n"
         "task_kind:\n"
         '- "factual": a quick fact or lookup.\n'
         '- "actionable": drafting, action items, plans, notes, a deliverable.\n'

@@ -40,7 +40,7 @@ const ROUTE_META: Record<string, { label: string; cls: string }> = {
 const EXAMPLES = [
   "What did we decide about onboarding across all meetings?",
   "In the Weekly Engineering Sync, what caused the database outage?",
-  "Which meetings mention the Acme pilot, and who owns the follow-ups?",
+  "Help me schedule a follow-up for the database outage action items",
 ];
 
 function downloadArtifact(a: AssistantArtifact) {
@@ -110,8 +110,8 @@ export default function AssistantChat() {
           <Sparkles size={22} className="text-brand" /> Assistant
         </h1>
         <p className="mt-1 text-sm text-muted">
-          Ask across all your meetings. I decide how to answer — one meeting, all of them, or by
-          using tools — and show my sources.
+          Ask across all your meetings and get work done from here — I answer, research, and draft
+          deliverables. For actions I can&apos;t automate yet, I&apos;ll guide you through them.
         </p>
       </div>
 
