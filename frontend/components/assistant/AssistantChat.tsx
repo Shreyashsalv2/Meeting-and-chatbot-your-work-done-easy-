@@ -71,33 +71,51 @@ export default function AssistantChat() {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
+  // Patch the last message (the streaming assistant bubble) in place.
+  function patchLast(patch: Partial<Msg> | ((prev: Msg) => Partial<Msg>)) {
+    setMessages((m) => {
+      const copy = [...m];
+      const i = copy.length - 1;
+      if (i < 0) return copy;
+      const p = typeof patch === "function" ? patch(copy[i]) : patch;
+      copy[i] = { ...copy[i], ...p };
+      return copy;
+    });
+  }
+
   async function send(text?: string) {
     const q = (text ?? input).trim();
     if (!q || loading || capped) return;
     const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.content }));
-    setMessages((m) => [...m, { role: "user", content: q }]);
+    // Add the user turn AND an empty assistant bubble that streams in.
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: q },
+      { role: "assistant", content: "" },
+    ]);
     setInput("");
     setLoading(true);
     try {
-      const res: AssistantResponse = await api.askAssistant(q, history);
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: res.answer,
-          route: res.route,
-          citations: res.citations,
-          steps: res.steps,
-          artifact: res.artifact ?? null,
-          offers: res.offers,
-        },
-      ]);
+      await api.askAssistantStream(q, history, {
+        onToken: (t) => patchLast((prev) => ({ content: prev.content + t })),
+        onMeta: (meta) =>
+          patchLast({
+            route: meta.route,
+            citations: meta.citations,
+            steps: meta.steps,
+            artifact: meta.artifact ?? null,
+            offers: meta.offers,
+          }),
+      });
+      // If the stream produced nothing, show a fallback.
+      patchLast((prev) => ({
+        content: prev.content || "Sorry, I couldn't answer that just now.",
+      }));
     } catch {
       toast.error("Couldn't get an answer — try again.");
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: "Sorry, I couldn't answer that just now." },
-      ]);
+      patchLast((prev) => ({
+        content: prev.content || "Sorry, I couldn't answer that just now.",
+      }));
     } finally {
       setLoading(false);
     }
@@ -156,7 +174,13 @@ export default function AssistantChat() {
                 m.role === "user" ? "bg-brand text-brand-ink" : "bg-panel text-ink",
               )}
             >
-              {m.content}
+              {m.content ? (
+                m.content
+              ) : m.role === "assistant" ? (
+                <span className="inline-flex items-center gap-2 text-muted">
+                  <Spinner /> thinking…
+                </span>
+              ) : null}
             </div>
 
             {/* Tool-call trace (agentic branch — populated in Phase E) */}
@@ -226,14 +250,6 @@ export default function AssistantChat() {
             )}
           </div>
         ))}
-
-        {loading && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-2xl bg-panel px-4 py-2.5 text-sm text-muted">
-              <Spinner /> thinking…
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="shrink-0 border-t border-line pt-3">

@@ -100,37 +100,52 @@ _DIRECT_SYSTEM = (
 )
 
 
+# Obvious "do an action" phrasing → route straight to the agent (skips the classifier LLM).
+_ACTION_RE = re.compile(
+    r"\b(schedule|re-?schedule|book|set up a|remind|reminder|e-?mail|send|invite|"
+    r"add (?:it|this|that|them)?\s*to (?:my )?(?:calendar|tasks?|to-?do)|create (?:a )?task|"
+    r"draft (?:an? )?(?:email|message)|put (?:it|this) on (?:my )?calendar)\b",
+    re.IGNORECASE,
+)
+
+
 # --- Routing -----------------------------------------------------------------
 def _route_query(state: AssistantState) -> dict:
+    q = state["question"]
+    # Free pre-check: obvious action requests go straight to the agent — no LLM call.
+    if _ACTION_RE.search(q):
+        return {"route": "agentic", "meeting_id": None,
+                "task_kind": "actionable", "offer_download": False}
     index = state.get("meetings_index") or []
     listing = "\n".join(f"{m['id']}: {m['title']}" for m in index) or "(none)"
+    hist = state.get("history") or []
+    convo = "\n".join(
+        f"{t.get('role')}: {str(t.get('content', ''))[:180]}" for t in hist[-2:]
+    ) or "(none)"
     prompt = (
-        "Classify how to answer the user's message.\n"
+        "Classify how to answer the message; use the recent conversation to resolve references "
+        "like 'this meeting' / 'that task'.\n"
         "route:\n"
         '- "no_retrieval": greeting/small talk, or not about meeting content.\n'
-        '- "single_meeting": about ONE specific meeting from the list (give its id).\n'
+        '- "single_meeting": about ONE specific meeting from the list (give its id); resolve '
+        '"this/that meeting" from the conversation.\n'
         '- "semantic_all": about meeting content generally, or spanning meetings.\n'
-        '- "agentic": the user wants an ACTION or task DONE, or an external lookup, or a document '
-        'produced. Examples: "schedule a follow-up Friday", "email the team", "remind me to…", '
-        '"book a meeting", "create a task", "add this to my calendar", "look up OAuth", "draft/'
-        'save/export a doc". Choose "agentic" for these EVEN IF the message also mentions a meeting '
-        "or topic (the action verb wins over the topic).\n"
-        "task_kind:\n"
-        '- "factual": a quick fact or lookup.\n'
-        '- "actionable": drafting, action items, plans, notes, a deliverable.\n'
-        '- "creative": brainstorming, writing, ideation.\n'
-        "offer_download: true if the answer is worth saving as a document "
-        "(actionable/creative deliverables), else false.\n\n"
+        '- "agentic": wants an action/document produced, OR an EXTERNAL lookup / explanation of a '
+        'general concept or technology (e.g. "explain OAuth 2.0", "what is a statement timeout") — '
+        "even if it's tied to a meeting task; the meetings don't explain general concepts.\n"
+        "task_kind: factual | actionable | creative.  offer_download: true if worth saving as a "
+        "document, else false.\n\n"
+        f"Recent conversation:\n{convo}\n\n"
         f"Meetings:\n{listing}\n\n"
-        f"Message: {state['question']}\n\n"
+        f"Message: {q}\n\n"
         'Respond with JSON only: {"route": "...", "meeting_id": <id or null>, '
         '"task_kind": "...", "offer_download": true|false}'
     )
     route, meeting_id = "semantic_all", None
     task_kind, offer_download = "factual", False
     try:
-        # Route on the strong model (fallback to 8B on rate limit) — accuracy matters here.
-        raw = vs.resilient_invoke([HumanMessage(content=prompt)], 0.0)
+        # Cheap 8B classifier (the deterministic pre-check already handles actions).
+        raw = vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group(0)) if m else {}
         cand = str(data.get("route", "")).strip()
@@ -323,3 +338,91 @@ def answer(
             "artifact": None,
             "offers": [],
         }
+
+
+# --- Streaming (SSE) — token-neutral (streams the existing generation call) --
+def _context_from(docs) -> str:
+    return "\n\n".join(
+        f"[{d.metadata.get('meeting_title','?')} | {d.metadata.get('speaker','?')} "
+        f"@ {int(d.metadata.get('start_time',0))}s] {d.page_content}"
+        for d in docs
+    )
+
+
+def _stream_generation(messages, temperature: float):
+    """Yield answer tokens from the strong model, falling back to 8B on a pre-stream
+    rate limit; yields the honest rate-limit message if both are exhausted."""
+    yielded = False
+    try:
+        for chunk in vs.get_llm(temperature).stream(messages):
+            if chunk.content:
+                yielded = True
+                yield chunk.content
+        return
+    except Exception as exc:  # noqa: BLE001
+        if yielded or not vs.is_rate_limit(exc):
+            return
+    try:
+        for chunk in vs.get_fast_llm(temperature).stream(messages):
+            if chunk.content:
+                yielded = True
+                yield chunk.content
+    except Exception as exc:  # noqa: BLE001
+        if not yielded and vs.is_rate_limit(exc):
+            yield vs.rate_limit_message(vs.rate_limit_retry_hint(exc))
+
+
+def _word_chunks(text: str):
+    """Chunk pre-computed text for a streamed feel (the agentic path runs tools first)."""
+    for word in text.split(" "):
+        yield word + " "
+
+
+def answer_stream(question, history=None, meetings_index=None):
+    """Generator yielding ('token', str) events then a final ('meta', dict). Never raises."""
+    base_meta = {"route": "no_retrieval", "task_kind": None, "citations": [],
+                 "steps": [], "artifact": None, "offers": []}
+    if not vs.llm_available():
+        yield ("token", "The assistant isn't available right now (no AI key is configured).")
+        yield ("meta", base_meta)
+        return
+    state = {"question": question, "history": history or [], "meetings_index": meetings_index or []}
+    try:
+        state.update(_route_query(state))
+        route = state.get("route", "semantic_all")
+
+        if route == "agentic":
+            res = _run_agent(state)  # tools run here (non-streamed); then stream the answer
+            for tok in _word_chunks(res.get("generation", "")):
+                yield ("token", tok)
+            yield ("meta", {
+                "route": "agentic", "task_kind": state.get("task_kind"),
+                "citations": res.get("citations", []), "steps": res.get("steps", []),
+                "artifact": res.get("artifact"), "offers": res.get("offers", []),
+            })
+            return
+
+        if route == "no_retrieval":
+            docs = []
+            messages = _with_history(_DIRECT_SYSTEM, state)
+        else:
+            docs = (vs.similarity_search(question, meeting_id=state.get("meeting_id"))
+                    if route == "single_meeting" else vs.similarity_search(question))
+            messages = _with_history(
+                f"{_ANSWER_SYSTEM}\n\nContext:\n{_context_from(docs) or '(none)'}", state
+            )
+
+        for tok in _stream_generation(messages, temp_for(state.get("task_kind"))):
+            yield ("token", tok)
+        yield ("meta", {
+            "route": route, "task_kind": state.get("task_kind"),
+            "citations": _citations(docs), "steps": [], "artifact": None,
+            "offers": _build_offers(state),
+        })
+    except vs.RateLimited as rl:
+        yield ("token", vs.rate_limit_message(rl.retry_hint))
+        yield ("meta", base_meta)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("answer_stream failed: %s", exc)
+        yield ("token", "Sorry, I couldn't answer that just now.")
+        yield ("meta", base_meta)

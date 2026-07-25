@@ -473,6 +473,53 @@ tone comes from the persona, not from cranking temperature.
 
 ---
 
+## Follow-up: streaming, reliable downloads, and cutting Groq tokens
+
+**Files:** `assistant.py` (`/stream`), `adaptive_rag.py` (`answer_stream`, action pre-check, 8B router),
+`agentic_rag.py` (condensed prompt, download safety-net), `AssistantChat.tsx` + `api.ts` (SSE client).
+
+### Streaming (SSE), token-neutral
+`POST /api/assistant/stream` returns `text/event-stream`; `answer_stream` yields `data: {"token": …}` events then
+a final `data: {"meta": …}` and `data: [DONE]`. It streams the **existing** generation call — no extra LLM call:
+retrieval/direct branches stream `ChatGroq.stream()`; the agent runs tools first then its answer streams (chunked,
+since tools finish before the final text). Frontend consumes the stream with a `fetch` + `ReadableStream` reader
+and appends tokens to the live bubble; metadata (route/citations/steps/artifact/offers) applies at the end.
+
+### Reliable downloads (the transcript bug)
+The model used to refuse to save ("I'm a text AI, I can't save files") and dump walls of text. Fixed two ways:
+(1) a blunt prompt rule — *you CAN save via create_document; never say you can't, never tell the user to
+copy-paste*; (2) a deterministic safety-net in `agentic_rag.run` — if `wikipedia` ran but no file was produced,
+auto-append a "📄 Download the findings" offer. So a download choice always appears after a lookup.
+
+### Where the Groq tokens went — and how we cut them
+**What consumed them (per assistant turn):**
+- The **system prompt is paid on *every* LLM call** — and the agent loop makes up to `agent_max_steps` calls,
+  each re-sending the (long) prompt + accumulating message history + tool outputs. This is the dominant cost.
+- The **router** was a call on the **70B** model every turn.
+- Self-RAG's per-meeting chat runs retrieve→grade→generate→grade (~3–4 calls).
+
+**How we cut it:**
+| Lever | Before | After |
+|---|---|---|
+| Agent system prompt | ~2.9k chars (~720 tok) ×≤4 calls | condensed ~2.0k chars (~510 tok) ×≤4 calls |
+| Routing | 70B call every turn | **regex pre-check → 0 calls for actions**; else cheap **8B** |
+| Agent tool cycles | `agent_max_steps` 6 | **4** |
+| History in prompts | last 6 turns (agent) | **last 4** (agent), last 2 (router) |
+| Wiki payload | 800 chars | 500 |
+| Streaming | — | reuses the existing call (**no extra**) |
+
+Net per turn: a greeting/meeting-Q keeps 2 calls but the router is now 8B not 70B; an **action turn drops the
+whole 70B routing call** (regex) and runs a shorter agent prompt over fewer, shorter steps. Total tokens go
+**down**, which is what kept the daily-cap pain from returning.
+
+### Gotcha: stale HMR during multi-file edits
+Streaming appeared "stuck on thinking…" in the browser while the raw SSE stream (tested via `fetch` in the
+console) worked perfectly — the Next.js dev server had a **stale bundle** across the several files I changed at
+once. `rm -rf .next` + restarting `next dev` fixed it. Lesson: when a feature spans api + component + types and
+"the code is obviously right," suspect the dev bundle before the code.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the
