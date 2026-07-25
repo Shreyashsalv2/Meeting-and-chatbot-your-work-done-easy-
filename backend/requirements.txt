@@ -71,6 +71,8 @@ packaging==26.2
 pillow==12.3.0
 propcache==0.5.2
 protobuf==7.35.1
+psycopg==3.3.4
+psycopg-binary==3.3.4
 py_rust_stemmers==0.1.8
 pybase64==1.4.3
 pydantic==2.13.4
