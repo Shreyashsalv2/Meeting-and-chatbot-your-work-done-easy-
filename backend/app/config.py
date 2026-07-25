@@ -49,6 +49,28 @@ class Settings(BaseSettings):
     temp_actionable: float = 0.25
     temp_creative: float = 0.3
 
+    # --- Auth (Google OAuth) ---
+    # When client id+secret are set, login is required; otherwise the app stays
+    # un-gated (existing no-auth behavior) so nothing breaks before creds exist.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    oauth_redirect_uri: str = "http://localhost:8000/api/auth/google/callback"
+    session_secret: str = "dev-insecure-change-me"   # signs the session JWT cookie
+    post_login_redirect: str = "http://localhost:3000"  # where to send the user after login
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def google_scopes(self) -> list[str]:
+        return [
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/calendar",
+        ]
+
     # --- CORS / frontend ---
     # Production frontend origin (the Vercel URL). Localhost is always allowed.
     frontend_url: str = "http://localhost:3000"

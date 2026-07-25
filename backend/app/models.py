@@ -154,6 +154,24 @@ class Topic(SQLModel, table=True):
     meeting: Optional[Meeting] = Relationship(back_populates="topics")
 
 
+class User(SQLModel, table=True):
+    """A Google-authenticated user. Holds identity + the Google OAuth tokens used by
+    the Calendar tool. (Meetings are shared across users for now — no per-user FK yet.)"""
+
+    __tablename__ = "users"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    google_sub: str = Field(unique=True, index=True)
+    email: str = Field(index=True)
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    google_access_token: Optional[str] = None
+    google_refresh_token: Optional[str] = None
+    google_token_expiry: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Tag(SQLModel, table=True):
     __tablename__ = "tags"
 

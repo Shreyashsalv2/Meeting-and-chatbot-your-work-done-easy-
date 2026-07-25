@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import init_db
-from .routers import action_items, assistant, export, meetings, search
+from .routers import action_items, assistant, auth, export, meetings, search
 from .seed import seed_if_empty
 
 
@@ -53,6 +53,7 @@ app.include_router(action_items.router)
 app.include_router(search.router)
 app.include_router(export.router)
 app.include_router(assistant.router)
+app.include_router(auth.router)
 
 
 @app.get("/api/health", tags=["meta"])
