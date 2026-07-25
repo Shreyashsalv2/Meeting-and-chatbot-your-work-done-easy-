@@ -83,13 +83,20 @@ def _build_offers(state: AssistantState) -> list[dict]:
 
 
 _ANSWER_SYSTEM = (
-    "You are the assistant for a meeting-notes app. Answer the user using ONLY the "
-    "Context excerpts from their meetings. If the Context is empty or lacks the answer, "
-    "say so briefly. Be concise; when useful, mention which meeting and who said it."
+    "You are an AI Meeting Intelligence Assistant — a warm, sharp teammate with recall of the "
+    "user's meetings. Answer using the Context excerpts from their meetings and the conversation "
+    "so far; reference meetings by title and who said what. If the Context lacks the answer, say "
+    "so plainly — never invent decisions, dates, participants, or action items (grounding applies "
+    "to meeting FACTS). Be conversational and interactive (like ChatGPT/Claude), not curt; keep it "
+    "concise, and proactively offer a helpful next step, a related meeting, or unfinished work when "
+    "it genuinely helps."
 )
 _DIRECT_SYSTEM = (
-    "You are the assistant for a meeting-notes app. The user's message doesn't require "
-    "looking up meeting content. Reply briefly and helpfully. Do not invent meeting details."
+    "You are an AI Meeting Intelligence Assistant for the user's meetings — warm, friendly, and "
+    "interactive like ChatGPT/Claude. This message is small talk or general, so just engage "
+    "naturally and helpfully. Feel free to converse and suggest, but don't invent meeting details; "
+    "when useful, proactively offer what you can do (e.g. summarize a meeting, pull up action "
+    "items, research a topic, or draft something)."
 )
 
 
@@ -103,9 +110,11 @@ def _route_query(state: AssistantState) -> dict:
         '- "no_retrieval": greeting/small talk, or not about meeting content.\n'
         '- "single_meeting": about ONE specific meeting from the list (give its id).\n'
         '- "semantic_all": about meeting content generally, or spanning meetings.\n'
-        '- "agentic": the user wants an ACTION or task done — e.g. schedule/send/remind/'
-        "add-to-tracker, help me do X, look something up externally, or produce/draft/save/export "
-        "a document. Route here even if we might not have a tool for the action.\n"
+        '- "agentic": the user wants an ACTION or task DONE, or an external lookup, or a document '
+        'produced. Examples: "schedule a follow-up Friday", "email the team", "remind me to…", '
+        '"book a meeting", "create a task", "add this to my calendar", "look up OAuth", "draft/'
+        'save/export a doc". Choose "agentic" for these EVEN IF the message also mentions a meeting '
+        "or topic (the action verb wins over the topic).\n"
         "task_kind:\n"
         '- "factual": a quick fact or lookup.\n'
         '- "actionable": drafting, action items, plans, notes, a deliverable.\n'
@@ -120,7 +129,8 @@ def _route_query(state: AssistantState) -> dict:
     route, meeting_id = "semantic_all", None
     task_kind, offer_download = "factual", False
     try:
-        raw = vs.get_fast_llm(0.0).invoke([HumanMessage(content=prompt)]).content or ""
+        # Route on the strong model (fallback to 8B on rate limit) — accuracy matters here.
+        raw = vs.resilient_invoke([HumanMessage(content=prompt)], 0.0)
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group(0)) if m else {}
         cand = str(data.get("route", "")).strip()

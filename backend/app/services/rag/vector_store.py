@@ -188,6 +188,50 @@ def _chunk_meeting(meeting) -> tuple[list["Document"], list[str]]:
     return docs, ids
 
 
+def _meta_docs(meeting) -> tuple[list["Document"], list[str]]:
+    """Index the meeting's SUMMARY, ACTION ITEMS, and TOPICS as their own retrievable
+    documents (so the assistant can answer from them, per the info-priority spec).
+    They carry a ``kind`` and no meaningful timestamp (start_time=0.0)."""
+    from langchain_core.documents import Document
+
+    mid, title = int(meeting.id), meeting.title
+    base = {"meeting_id": mid, "meeting_title": title, "start_time": 0.0}
+    docs: list["Document"] = []
+    ids: list[str] = []
+
+    if meeting.summary and meeting.summary.overview:
+        docs.append(
+            Document(
+                page_content=f"Summary of '{title}': {meeting.summary.overview}",
+                metadata={**base, "kind": "summary", "speaker": "Summary"},
+            )
+        )
+        ids.append(f"m{mid}-summary")
+
+    for i, a in enumerate(meeting.action_items):
+        who = f" (assignee: {a.assignee})" if a.assignee else ""
+        status = "done" if a.completed else "open"
+        docs.append(
+            Document(
+                page_content=f"Action item [{status}] from '{title}': {a.text}{who}",
+                metadata={**base, "kind": "action_item", "speaker": a.assignee or "Action item"},
+            )
+        )
+        ids.append(f"m{mid}-action-{i}")
+
+    for i, t in enumerate(meeting.topics):
+        docs.append(
+            Document(
+                page_content=f"Topic in '{title}': {t.title}",
+                metadata={**base, "kind": "topic", "speaker": "Topic",
+                          "start_time": float(t.start_time or 0.0)},
+            )
+        )
+        ids.append(f"m{mid}-topic-{i}")
+
+    return docs, ids
+
+
 # --- Indexing (best-effort; callers must guard) ------------------------------
 def remove_meeting(meeting_id: int) -> None:
     store = get_store()
@@ -198,9 +242,13 @@ def remove_meeting(meeting_id: int) -> None:
 
 
 def index_meeting(meeting) -> int:
-    """(Re)index one meeting's transcript. Idempotent upsert. Returns chunk count."""
+    """(Re)index a meeting: transcript chunks PLUS its summary, action items, and topics.
+    Idempotent upsert (remove_meeting clears all of the meeting's docs first)."""
     docs, ids = _chunk_meeting(meeting)
-    remove_meeting(meeting.id)  # clear old chunks first
+    meta_docs, meta_ids = _meta_docs(meeting)
+    docs += meta_docs
+    ids += meta_ids
+    remove_meeting(meeting.id)  # clear old docs (all kinds) first
     if docs:
         get_store().add_documents(docs, ids=ids)
     return len(docs)

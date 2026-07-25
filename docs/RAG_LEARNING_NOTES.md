@@ -434,6 +434,45 @@ the LLM).
 
 ---
 
+## Follow-up: the Meeting-Intelligence persona (grounded + interactive)
+
+**Files:** `agentic_rag._AGENT_SYSTEM`, `adaptive_rag` (`_route_query` + `_ANSWER_SYSTEM`/`_DIRECT_SYSTEM`),
+`vector_store.index_meeting`/`_meta_docs`, `config.py` (temps).
+
+### The idea
+The assistant should feel like an **intelligent teammate with perfect recall** of the meetings: answer from
+meeting knowledge first (priority: transcripts → summaries → action items → conversation → Wikipedia →
+general), be **action-item aware**, **proactive** with suggestions, use Wikipedia only when meetings fall short
+(and say *why* + offer the result as a download), and frame unavailable actions as *"once <Google tool> is
+connected I'll do X; for now here's the closest alternative"* — never faking. Crucially, it's **grounded but
+interactive**: never invent meeting *facts*, but converse warmly and suggest freely (not a rigid lookup tool).
+
+### The two fixes that made it real (beyond prompt wording)
+1. **Routing** — action requests must reach the `agentic` branch (that's where the future-tools handling lives).
+   The router was on the cheap 8B model and misrouted "schedule a follow-up Friday about the outage" to
+   `semantic_all` (the topic words pulled it there), so it gave a flat "not in the meetings" instead of the
+   future-tools framing. Fix: route on the **strong model with 8B fallback** (`resilient_invoke`) + explicit
+   action examples ("the action verb wins over the topic"). Now it routes `agentic` and frames correctly.
+2. **Knowledge sources** — retrieval indexed only transcript turns, so "answer from summaries / action items"
+   had no data. `_meta_docs` now also indexes each meeting's **summary**, **action items** (with assignee +
+   open/done), and **topics** as their own `kind`-tagged documents (15 → 65 docs on the seed set). So
+   action-item questions answer from actual action-item records, not just transcript guesses.
+
+### Balance: grounded ≠ robotic
+The "never hallucinate" rule is scoped to **meeting facts** (decisions, dates, participants, action items). The
+prompt explicitly tells the model to otherwise be warm, conversational, and proactive — so a greeting gets a
+friendly, helpful reply, not "that's not in the meetings." Temperature stays 0.1–0.3 for consistency; the human
+tone comes from the persona, not from cranking temperature.
+
+### Gotchas
+- **Cheap models misroute.** Moving routing to 8B saved little (routing is one small call) but hurt accuracy on
+  action-vs-topic classification. Lesson: spend the strong model on the *decision* that changes behavior; save
+  8B for grading/rephrasing where accuracy matters less.
+- **Meta docs have no timestamp.** Summary/action-item docs use `start_time=0.0` (Chroma metadata can't be
+  None), so their citation chips show the meeting title without a deep-link — expected.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the
