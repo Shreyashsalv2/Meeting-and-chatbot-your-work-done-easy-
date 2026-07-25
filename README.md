@@ -1,6 +1,6 @@
-# Fireflies Clone — Meeting Notes & Transcription Platform
+# Meeting Notes & Transcription Platform
 
-This is my clone of [Fireflies.ai](https://fireflies.ai) — a meeting-assistant app where you can browse a
+This is a meeting-assistant app where you can browse a
 library of past meetings, open one to read an **interactive transcript** that's synced to a media player,
 get **AI-generated** summaries / action items / topics, search across everything, and manage meetings
 end-to-end.
