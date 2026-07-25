@@ -300,6 +300,24 @@ thing, it's a family of control-flow patterns over retrieval, and LangGraph is h
 
 ---
 
+## Verification (Phase F)
+
+All four were driven in a real browser end-to-end (plus `next build` and the backend `/docs`):
+- **Self-RAG** — asked "who owns the search rebuild spec and by when?" on `/meetings/1` → grounded
+  answer + a `Marcus Rodriguez · 1:54` citation chip; clicking it seeked the player to 1:55.
+- **RAG-Fusion** — `/search` in Semantic mode for "reduce customer churn and keep users engaged"
+  (no literal match) → **8** relevant transcript results.
+- **Adaptive RAG** — `/assistant`: "onboarding across all meetings" → **All meetings** badge + chips
+  spanning several meetings; a greeting → direct answer.
+- **Agentic RAG** — `/assistant`: "draft and export a document for the Weekly Engineering Sync" →
+  **Agent + tools** badge, an `export_meeting_text({meeting_id: 2})` step, and a downloadable
+  `weekly-engineering-sync.txt`; "search then explain via Wikipedia" → `search_meetings → wikipedia`.
+
+Build/API gates: `next build` compiles all routes; `/api/assistant` and `/api/search/semantic` are
+in the OpenAPI schema; existing CRUD/chat contracts unchanged.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the
