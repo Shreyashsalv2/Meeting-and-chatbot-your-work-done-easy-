@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from .. import models, schemas
+from ..auth import current_user, google_credentials
 from ..database import get_session
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -29,30 +32,42 @@ def _history_and_index(payload: schemas.AssistantRequest, session: Session):
 
 
 @router.post("", response_model=schemas.AssistantResponse)
-def assistant(payload: schemas.AssistantRequest, session: Session = Depends(get_session)):
+def assistant(
+    payload: schemas.AssistantRequest,
+    session: Session = Depends(get_session),
+    user: Optional[models.User] = Depends(current_user),
+):
     if not payload.question.strip():
         raise HTTPException(status_code=422, detail="Question cannot be empty")
 
     history, meetings_index = _history_and_index(payload, session)
+    creds = google_credentials(user, session)  # None unless the user connected Google
     from ..services.rag import adaptive_rag
 
-    result = adaptive_rag.answer(payload.question, history, meetings_index)
+    result = adaptive_rag.answer(payload.question, history, meetings_index, google_creds=creds)
     return schemas.AssistantResponse(**result)
 
 
 @router.post("/stream")
-def assistant_stream(payload: schemas.AssistantRequest, session: Session = Depends(get_session)):
+def assistant_stream(
+    payload: schemas.AssistantRequest,
+    session: Session = Depends(get_session),
+    user: Optional[models.User] = Depends(current_user),
+):
     """Streaming variant (SSE): emits `data: {"token": …}` events, then a final
     `data: {"meta": {route, citations, steps, artifact, offers}}` and `data: [DONE]`."""
     if not payload.question.strip():
         raise HTTPException(status_code=422, detail="Question cannot be empty")
 
     history, meetings_index = _history_and_index(payload, session)
+    creds = google_credentials(user, session)  # computed now (before streaming starts)
     from ..services.rag import adaptive_rag
 
     def sse():
         try:
-            for kind, data in adaptive_rag.answer_stream(payload.question, history, meetings_index):
+            for kind, data in adaptive_rag.answer_stream(
+                payload.question, history, meetings_index, google_creds=creds
+            ):
                 key = "token" if kind == "token" else "meta"
                 yield f"data: {json.dumps({key: data})}\n\n"
         except Exception:  # noqa: BLE001 - never break the stream

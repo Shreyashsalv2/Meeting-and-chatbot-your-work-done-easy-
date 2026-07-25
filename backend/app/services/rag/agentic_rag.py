@@ -83,8 +83,10 @@ def run(
     history: Optional[list[dict]] = None,
     meetings_index: Optional[list[dict]] = None,
     temperature: Optional[float] = None,
+    google_creds=None,
 ) -> dict:
-    """Run the tool-agent. Returns {generation, citations, steps, artifact}. Never raises."""
+    """Run the tool-agent. Returns {generation, citations, steps, artifact}. Never raises.
+    ``google_creds`` (when present) enables the live Google Calendar tools."""
     if not vs.llm_available():
         return {
             "generation": "The assistant isn't available right now (no AI key is configured).",
@@ -165,7 +167,88 @@ def run(
         except Exception as exc:  # noqa: BLE001
             return f"Export failed: {exc}"
 
-    tools = [search_meetings, wikipedia, create_document, export_meeting_text]
+    # --- Google Calendar tools (only when the user has connected Google) ---
+    calendar_tools = []
+    if google_creds is not None:
+        from googleapiclient.discovery import build as _gbuild
+
+        def _svc():
+            return _gbuild("calendar", "v3", credentials=google_creds, cache_discovery=False)
+
+        @tool
+        def list_calendar_events(days_ahead: int = 7) -> str:
+            """List the user's upcoming Google Calendar events for the next N days
+            (returns each event's id, title, and start time — use the id to amend/delete)."""
+            import datetime as _dt
+
+            now = _dt.datetime.now(_dt.timezone.utc)
+            tmax = now + _dt.timedelta(days=max(1, days_ahead))
+            try:
+                res = (
+                    _svc().events().list(
+                        calendarId="primary", timeMin=now.isoformat(), timeMax=tmax.isoformat(),
+                        singleEvents=True, orderBy="startTime", maxResults=10,
+                    ).execute()
+                )
+            except Exception as exc:  # noqa: BLE001
+                return f"Couldn't read the calendar: {exc}"
+            items = res.get("items", [])
+            if not items:
+                return "No upcoming events in that window."
+            return "\n".join(
+                f"- id={e['id']} | {e.get('summary','(no title)')} | "
+                f"{e.get('start',{}).get('dateTime', e.get('start',{}).get('date',''))}"
+                for e in items
+            )
+
+        @tool
+        def create_calendar_event(title: str, start: str, end: str, description: str = "") -> str:
+            """Create a Google Calendar event. start/end are ISO datetimes
+            (e.g. 2026-07-31T15:00:00). Returns the event id + link."""
+            body = {"summary": title, "description": description,
+                    "start": {"dateTime": start}, "end": {"dateTime": end}}
+            try:
+                ev = _svc().events().insert(calendarId="primary", body=body).execute()
+            except Exception as exc:  # noqa: BLE001
+                return f"Couldn't create the event: {exc}"
+            return f"Created '{title}' (id={ev['id']}). Link: {ev.get('htmlLink','')}"
+
+        @tool
+        def update_calendar_event(event_id: str, title: str = "", start: str = "",
+                                  end: str = "", description: str = "") -> str:
+            """Amend/reschedule an existing event by id (pass only the fields to change)."""
+            patch = {}
+            if title:
+                patch["summary"] = title
+            if description:
+                patch["description"] = description
+            if start:
+                patch["start"] = {"dateTime": start}
+            if end:
+                patch["end"] = {"dateTime": end}
+            if not patch:
+                return "Nothing to update — provide at least one field to change."
+            try:
+                ev = _svc().events().patch(calendarId="primary", eventId=event_id, body=patch).execute()
+            except Exception as exc:  # noqa: BLE001
+                return f"Couldn't update the event: {exc}"
+            return f"Updated event {event_id}. Link: {ev.get('htmlLink','')}"
+
+        @tool
+        def delete_calendar_event(event_id: str) -> str:
+            """Cancel/delete a calendar event by id."""
+            try:
+                _svc().events().delete(calendarId="primary", eventId=event_id).execute()
+            except Exception as exc:  # noqa: BLE001
+                return f"Couldn't delete the event: {exc}"
+            return f"Deleted event {event_id}."
+
+        calendar_tools = [
+            list_calendar_events, create_calendar_event,
+            update_calendar_event, delete_calendar_event,
+        ]
+
+    tools = [search_meetings, wikipedia, create_document, export_meeting_text] + calendar_tools
     tools_by_name = {t.name: t for t in tools}
     # Bound temperature: honor the task's warmth but keep tool-calling reliable.
     agent_temp = min(temperature if temperature is not None else 0.1, 0.4)
@@ -232,7 +315,15 @@ def run(
     graph = g.compile()
 
     listing = "\n".join(f"{m['id']}: {m['title']}" for m in (meetings_index or [])) or "(none)"
-    system = f"{_AGENT_SYSTEM}\n\nAvailable meetings (id: title):\n{listing}"
+    cal_note = (
+        "\n\nGoogle Calendar IS connected — you CAN list, create, amend/reschedule, and delete "
+        "the user's real calendar events with the calendar tools. Do it, then confirm what you "
+        "did (include the event link). To amend/delete, list first to get the event id."
+        if google_creds is not None
+        else "\n\nGoogle Calendar is NOT connected for this user, so you cannot create real "
+        "events yet — prepare the details and suggest they connect Google."
+    )
+    system = f"{_AGENT_SYSTEM}\n\nAvailable meetings (id: title):\n{listing}{cal_note}"
     messages: list = [SystemMessage(content=system)]
     for turn in (history or [])[-4:]:  # trim history to save tokens
         role, content = turn.get("role"), str(turn.get("content", "")).strip()

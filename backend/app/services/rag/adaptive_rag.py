@@ -55,6 +55,7 @@ class AssistantState(TypedDict, total=False):
     steps: list[dict]
     artifact: Optional[dict]
     offers: list[dict]
+    google_creds: object  # google.oauth2 Credentials for the Calendar tool (or None)
 
 
 def temp_for(task_kind: Optional[str]) -> float:
@@ -211,6 +212,7 @@ def _run_agent(state: AssistantState) -> dict:
             state.get("history"),
             state.get("meetings_index"),
             temperature=temp_for(state.get("task_kind")),
+            google_creds=state.get("google_creds"),
         )
     except vs.RateLimited:
         raise
@@ -288,6 +290,7 @@ def answer(
     question: str,
     history: Optional[list[dict]] = None,
     meetings_index: Optional[list[dict]] = None,
+    google_creds=None,
 ) -> dict:
     """Run the unified assistant. Returns {answer, route, citations, steps, artifact}."""
     if not vs.llm_available():
@@ -306,6 +309,7 @@ def answer(
                 "question": question,
                 "history": history or [],
                 "meetings_index": meetings_index or [],
+                "google_creds": google_creds,
             }
         )
         return {
@@ -378,7 +382,7 @@ def _word_chunks(text: str):
         yield word + " "
 
 
-def answer_stream(question, history=None, meetings_index=None):
+def answer_stream(question, history=None, meetings_index=None, google_creds=None):
     """Generator yielding ('token', str) events then a final ('meta', dict). Never raises."""
     base_meta = {"route": "no_retrieval", "task_kind": None, "citations": [],
                  "steps": [], "artifact": None, "offers": []}
@@ -386,7 +390,8 @@ def answer_stream(question, history=None, meetings_index=None):
         yield ("token", "The assistant isn't available right now (no AI key is configured).")
         yield ("meta", base_meta)
         return
-    state = {"question": question, "history": history or [], "meetings_index": meetings_index or []}
+    state = {"question": question, "history": history or [], "meetings_index": meetings_index or [],
+             "google_creds": google_creds}
     try:
         state.update(_route_query(state))
         route = state.get("route", "semantic_all")
