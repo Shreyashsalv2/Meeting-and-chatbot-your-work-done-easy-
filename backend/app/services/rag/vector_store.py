@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # avoid importing heavy libs at module load
 logger = logging.getLogger(__name__)
 
 _COLLECTION = "meeting_segments"
+_MEMORY_COLLECTION = "user_memory"
 
 
 # --- Seams (Dependency Inversion): swap these to change providers -------------
@@ -136,6 +137,71 @@ def get_store():
         collection_name=_COLLECTION,
         embedding_function=get_embeddings(),
     )
+
+
+# --- Cross-session memory (RAG #3 groundwork) --------------------------------
+# A SEPARATE Chroma collection so a user's past-conversation turns never leak into
+# meeting retrieval (and vice-versa). Every doc is tagged with ``user_id`` and search
+# is always filtered by it, so memory stays strictly per-user.
+@lru_cache(maxsize=1)
+def get_memory_store():
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    from langchain_chroma import Chroma
+
+    client = chromadb.PersistentClient(
+        path=settings.chroma_dir,
+        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
+    )
+    return Chroma(
+        client=client,
+        collection_name=_MEMORY_COLLECTION,
+        embedding_function=get_embeddings(),
+    )
+
+
+def add_memory(user_id: int, turn_id: int, role: str, content: str) -> None:
+    """Index one conversation turn for later recall (best-effort; caller guards)."""
+    from langchain_core.documents import Document
+
+    text = (content or "").strip()
+    if not text:
+        return
+    doc = Document(
+        page_content=f"{role}: {text}",
+        metadata={"user_id": int(user_id), "role": role},
+    )
+    get_memory_store().add_documents([doc], ids=[f"mem-{int(turn_id)}"])
+
+
+def search_memory(user_id: int, query: str, k: int = 4) -> list["Document"]:
+    """Top-k of THIS user's past conversation turns relevant to ``query``."""
+    return get_memory_store().similarity_search(
+        query, k=k, filter={"user_id": int(user_id)}
+    )
+
+
+def memory_count() -> int:
+    try:
+        return get_memory_store()._collection.count()
+    except Exception:  # noqa: BLE001
+        return len(get_memory_store().get().get("ids") or [])
+
+
+def reindex_memory(session) -> int:
+    """Rebuild the memory index from the durable ``chat_turns`` table (Chroma is
+    ephemeral on Render; Postgres is the source of truth). Returns turns indexed."""
+    from sqlmodel import select
+
+    from ...models import ChatTurn
+
+    turns = session.exec(select(ChatTurn)).all()
+    for t in turns:
+        try:
+            add_memory(t.user_id, t.id, t.role, t.content)
+        except Exception:  # noqa: BLE001
+            continue
+    return len(turns)
 
 
 # --- Chunking ----------------------------------------------------------------
@@ -282,6 +348,13 @@ def ensure_indexed(session) -> None:
             logger.info("RAG: indexed %d meetings into Chroma on startup.", n)
     except Exception as exc:  # noqa: BLE001 - never block startup
         logger.warning("RAG startup indexing skipped: %s", exc)
+    try:
+        if memory_count() == 0:
+            n = reindex_memory(session)
+            if n:
+                logger.info("RAG: rebuilt %d memory turns into Chroma on startup.", n)
+    except Exception as exc:  # noqa: BLE001 - never block startup
+        logger.warning("RAG memory rebuild skipped: %s", exc)
 
 
 # --- Retrieval ---------------------------------------------------------------

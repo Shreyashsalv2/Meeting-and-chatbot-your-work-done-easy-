@@ -84,9 +84,11 @@ def run(
     meetings_index: Optional[list[dict]] = None,
     temperature: Optional[float] = None,
     google_creds=None,
+    memory: str = "",
 ) -> dict:
     """Run the tool-agent. Returns {generation, citations, steps, artifact}. Never raises.
-    ``google_creds`` (when present) enables the live Google Calendar tools."""
+    ``google_creds`` (when present) enables the live Google Calendar tools.
+    ``memory`` (when present) is a recalled block of this user's past conversations."""
     if not vs.llm_available():
         return {
             "generation": "The assistant isn't available right now (no AI key is configured).",
@@ -343,7 +345,8 @@ def run(
         else "\n\nGoogle Calendar is NOT connected for this user, so you cannot create real "
         "events yet — prepare the details and suggest they connect Google."
     )
-    system = f"{_AGENT_SYSTEM}\n\nAvailable meetings (id: title):\n{listing}{cal_note}"
+    mem_note = f"\n\n{memory}" if memory else ""
+    system = f"{_AGENT_SYSTEM}\n\nAvailable meetings (id: title):\n{listing}{cal_note}{mem_note}"
     messages: list = [SystemMessage(content=system)]
     for turn in (history or [])[-4:]:  # trim history to save tokens
         role, content = turn.get("role"), str(turn.get("content", "")).strip()

@@ -520,6 +520,50 @@ once. `rm -rf .next` + restarting `next dev` fixed it. Lesson: when a feature sp
 
 ---
 
+## Follow-up: cross-session memory (the assistant remembers past conversations) ✅ Phase 3
+
+**Files:** `models.py` (`ChatTurn`), `vector_store.py` (`user_memory` collection + `add_memory`/`search_memory`/
+`reindex_memory`), NEW `services/rag/memory.py` (`save_turn`/`recall`), `adaptive_rag.py` (thread `user_id`,
+`_memory_block`, fold into every branch), `agentic_rag.py` (`memory=` kwarg), `assistant.py` (pass `user_id`,
+persist each turn).
+
+### The idea
+History in the request only survives one browser session. **Cross-session memory** lets the assistant recall
+things from *previous* sessions ("what did we decide about the launch last week?", "my cat's name is Mochi").
+It's retrieval, same as the meetings — just over a different corpus (the user's own past turns), scoped per user.
+
+### How it works
+1. **Persist** — after every assistant turn, `memory.save_turn(user_id, question, answer)` writes two `chat_turns`
+   rows (user + assistant) to **Postgres** (durable) and indexes each into a Chroma collection.
+2. **Index** — a **separate** `user_memory` collection (not `meeting_segments`), every doc tagged `user_id`.
+   Separation matters: memory must never leak into meeting retrieval, and meeting chunks must never pollute
+   recall. Doc id `mem-{turn_id}` → idempotent upsert.
+3. **Recall** — on each new message, `_memory_block(state)` runs `search_memory(user_id, question, k=4)`
+   (filtered by `user_id`) and, if there are hits, prepends a labelled block to the system prompt of *whatever*
+   branch fired (direct, retrieval, or agent). Local embeddings → **recall costs zero Groq tokens**.
+4. **Durability** — Chroma is ephemeral on Render, so on startup `ensure_indexed` calls `reindex_memory` to
+   rebuild the memory index from `chat_turns` (Postgres is the source of truth), exactly like meetings.
+
+### Design principles
+- **Same seam as meetings** (DIP): the graphs call `memory.recall`/`vs.search_memory`, never Chroma directly.
+- **Best-effort everywhere**: save and recall are wrapped so memory can never break an answer (or CRUD).
+- **Per-user isolation by metadata filter** — the one thing that must not regress; every read passes `user_id`.
+- **Grounding still holds**: the memory block is explicitly labelled "not meeting FACTS" so the model uses it
+  for continuity/preferences, not as a source of invented meeting decisions.
+
+### Verify
+Seed a fact in one "session" (`save_turn`), then in a fresh call with **no history** ask about it — the answer
+recalls it. Tested: "my cat is Mochi" → later "what is my cat called?" → *"Your cat's name is Mochi."* (route
+`no_retrieval`, zero history, memory-only).
+
+### Gotchas
+- Recall runs **before** the current turn is persisted, so the model never "recalls" the question it's answering.
+- Only fires when a `user_id` exists (i.e. logged in). Un-authed / auth-disabled → memory is silently skipped.
+- Keep memory in its own collection — reusing `meeting_segments` would need `kind` filtering on every meeting
+  query and risk cross-contamination; a second collection is simpler and safer.
+
+---
+
 ## Problems & Gotchas log
 
 Real issues hit while building, why they happened, and how we resolved them — kept for the

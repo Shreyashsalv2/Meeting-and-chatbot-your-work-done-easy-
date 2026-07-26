@@ -172,6 +172,19 @@ class User(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class ChatTurn(SQLModel, table=True):
+    """A single assistant-conversation turn, kept for cross-session memory (durable in
+    Postgres; the memory vector index is rebuilt from these on startup)."""
+
+    __tablename__ = "chat_turns"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
 class Tag(SQLModel, table=True):
     __tablename__ = "tags"
 

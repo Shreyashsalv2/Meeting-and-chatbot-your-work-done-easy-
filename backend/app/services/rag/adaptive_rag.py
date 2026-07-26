@@ -56,6 +56,7 @@ class AssistantState(TypedDict, total=False):
     artifact: Optional[dict]
     offers: list[dict]
     google_creds: object  # google.oauth2 Credentials for the Calendar tool (or None)
+    user_id: Optional[int]  # who's asking → cross-session memory recall (RAG #3)
 
 
 def temp_for(task_kind: Optional[str]) -> float:
@@ -108,6 +109,24 @@ _ACTION_RE = re.compile(
     r"draft (?:an? )?(?:email|message)|put (?:it|this) on (?:my )?calendar)\b",
     re.IGNORECASE,
 )
+
+
+def _memory_block(state: AssistantState) -> str:
+    """Recall this user's relevant past-conversation turns (RAG #3), or "" if none."""
+    uid = state.get("user_id")
+    if not uid:
+        return ""
+    try:
+        from . import memory
+
+        return memory.recall(int(uid), state["question"])
+    except Exception:  # noqa: BLE001 - memory must never break an answer
+        return ""
+
+
+def _augment(system: str, extra: str) -> str:
+    """Append a non-empty memory/context block to a system prompt."""
+    return f"{system}\n\n{extra}" if extra else system
 
 
 # --- Routing -----------------------------------------------------------------
@@ -191,13 +210,14 @@ def _generate(state: AssistantState) -> dict:
         f"@ {int(d.metadata.get('start_time',0))}s] {d.page_content}"
         for d in docs
     )
-    messages = _with_history(f"{_ANSWER_SYSTEM}\n\nContext:\n{context or '(none)'}", state)
+    system = _augment(_ANSWER_SYSTEM, _memory_block(state))
+    messages = _with_history(f"{system}\n\nContext:\n{context or '(none)'}", state)
     answer = vs.resilient_invoke(messages, temp_for(state.get("task_kind")))
     return {"generation": answer, "citations": _citations(docs), "offers": _build_offers(state)}
 
 
 def _answer_direct(state: AssistantState) -> dict:
-    messages = _with_history(_DIRECT_SYSTEM, state)
+    messages = _with_history(_augment(_DIRECT_SYSTEM, _memory_block(state)), state)
     answer = vs.resilient_invoke(messages, temp_for(state.get("task_kind")))
     return {"generation": answer, "citations": [], "offers": _build_offers(state)}
 
@@ -213,6 +233,7 @@ def _run_agent(state: AssistantState) -> dict:
             state.get("meetings_index"),
             temperature=temp_for(state.get("task_kind")),
             google_creds=state.get("google_creds"),
+            memory=_memory_block(state),
         )
     except vs.RateLimited:
         raise
@@ -291,6 +312,7 @@ def answer(
     history: Optional[list[dict]] = None,
     meetings_index: Optional[list[dict]] = None,
     google_creds=None,
+    user_id: Optional[int] = None,
 ) -> dict:
     """Run the unified assistant. Returns {answer, route, citations, steps, artifact}."""
     if not vs.llm_available():
@@ -310,6 +332,7 @@ def answer(
                 "history": history or [],
                 "meetings_index": meetings_index or [],
                 "google_creds": google_creds,
+                "user_id": user_id,
             }
         )
         return {
@@ -382,7 +405,7 @@ def _word_chunks(text: str):
         yield word + " "
 
 
-def answer_stream(question, history=None, meetings_index=None, google_creds=None):
+def answer_stream(question, history=None, meetings_index=None, google_creds=None, user_id=None):
     """Generator yielding ('token', str) events then a final ('meta', dict). Never raises."""
     base_meta = {"route": "no_retrieval", "task_kind": None, "citations": [],
                  "steps": [], "artifact": None, "offers": []}
@@ -391,7 +414,7 @@ def answer_stream(question, history=None, meetings_index=None, google_creds=None
         yield ("meta", base_meta)
         return
     state = {"question": question, "history": history or [], "meetings_index": meetings_index or [],
-             "google_creds": google_creds}
+             "google_creds": google_creds, "user_id": user_id}
     try:
         state.update(_route_query(state))
         route = state.get("route", "semantic_all")
@@ -407,14 +430,16 @@ def answer_stream(question, history=None, meetings_index=None, google_creds=None
             })
             return
 
+        mem = _memory_block(state)
         if route == "no_retrieval":
             docs = []
-            messages = _with_history(_DIRECT_SYSTEM, state)
+            messages = _with_history(_augment(_DIRECT_SYSTEM, mem), state)
         else:
             docs = (vs.similarity_search(question, meeting_id=state.get("meeting_id"))
                     if route == "single_meeting" else vs.similarity_search(question))
             messages = _with_history(
-                f"{_ANSWER_SYSTEM}\n\nContext:\n{_context_from(docs) or '(none)'}", state
+                f"{_augment(_ANSWER_SYSTEM, mem)}\n\nContext:\n{_context_from(docs) or '(none)'}",
+                state,
             )
 
         for tok in _stream_generation(messages, temp_for(state.get("task_kind"))):

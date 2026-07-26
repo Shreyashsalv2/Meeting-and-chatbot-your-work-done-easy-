@@ -42,9 +42,14 @@ def assistant(
 
     history, meetings_index = _history_and_index(payload, session)
     creds = google_credentials(user, session)  # None unless the user connected Google
-    from ..services.rag import adaptive_rag
+    uid = user.id if user else None
+    from ..services.rag import adaptive_rag, memory
 
-    result = adaptive_rag.answer(payload.question, history, meetings_index, google_creds=creds)
+    result = adaptive_rag.answer(
+        payload.question, history, meetings_index, google_creds=creds, user_id=uid
+    )
+    if uid:  # persist this exchange for cross-session memory (best-effort)
+        memory.save_turn(uid, payload.question, result.get("answer", ""))
     return schemas.AssistantResponse(**result)
 
 
@@ -61,17 +66,23 @@ def assistant_stream(
 
     history, meetings_index = _history_and_index(payload, session)
     creds = google_credentials(user, session)  # computed now (before streaming starts)
-    from ..services.rag import adaptive_rag
+    uid = user.id if user else None
+    from ..services.rag import adaptive_rag, memory
 
     def sse():
+        parts: list[str] = []
         try:
             for kind, data in adaptive_rag.answer_stream(
-                payload.question, history, meetings_index, google_creds=creds
+                payload.question, history, meetings_index, google_creds=creds, user_id=uid
             ):
+                if kind == "token":
+                    parts.append(str(data))
                 key = "token" if kind == "token" else "meta"
                 yield f"data: {json.dumps({key: data})}\n\n"
         except Exception:  # noqa: BLE001 - never break the stream
             yield f"data: {json.dumps({'token': 'Sorry, something went wrong.'})}\n\n"
+        if uid and parts:  # persist the streamed exchange for cross-session memory
+            memory.save_turn(uid, payload.question, "".join(parts))
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
