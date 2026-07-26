@@ -28,7 +28,13 @@ from typing import Annotated, Optional, TypedDict
 
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -78,25 +84,22 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def run(
+def _prepare(
     question: str,
     history: Optional[list[dict]] = None,
     meetings_index: Optional[list[dict]] = None,
     temperature: Optional[float] = None,
     google_creds=None,
     memory: str = "",
-) -> dict:
-    """Run the tool-agent. Returns {generation, citations, steps, artifact}. Never raises.
-    ``google_creds`` (when present) enables the live Google Calendar tools.
-    ``memory`` (when present) is a recalled block of this user's past conversations."""
-    if not vs.llm_available():
-        return {
-            "generation": "The assistant isn't available right now (no AI key is configured).",
-            "citations": [],
-            "steps": [],
-            "artifact": None,
-        }
+):
+    """Build the agent graph, its per-run collectors, and the initial messages.
 
+    Shared by ``run`` (invoke) and ``run_stream`` (token streaming). ``google_creds``
+    (when present) enables the live Google Calendar tools; ``memory`` (when present) is a
+    recalled block of this user's past conversations. Returns
+    ``(graph, messages, citations, steps, artifact)`` — the collectors are populated by
+    the tools as the graph runs (via closures), so read them *after* invoking/streaming.
+    """
     # Per-run collectors (closures capture these so tools can report structured output).
     citations: list[dict] = []
     steps: list[dict] = []
@@ -356,25 +359,11 @@ def run(
             )
     messages.append(HumanMessage(content=question))
 
-    try:
-        final = graph.invoke({"messages": messages})
-        answer = (final["messages"][-1].content or "").strip()
-    except vs.RateLimited as rl:
-        return {
-            "generation": vs.rate_limit_message(rl.retry_hint),
-            "citations": citations[:5],
-            "steps": steps,
-            "artifact": artifact or None,
-        }
-    except Exception as exc:  # noqa: BLE001 - never crash the assistant
-        logger.warning("Agentic RAG failed: %s", exc)
-        return {
-            "generation": "Sorry, I couldn't complete that request just now.",
-            "citations": citations[:5],
-            "steps": steps,
-            "artifact": artifact or None,
-        }
+    return graph, messages, citations, steps, artifact
 
+
+def _finalize(answer: str, citations: list[dict], steps: list[dict], artifact: dict) -> dict:
+    """Assemble the agent's response dict: dedupe citations + add the download safety-net."""
     # Dedupe citations by (meeting, timestamp).
     seen, deduped = set(), []
     for c in citations:
@@ -399,3 +388,90 @@ def run(
         "artifact": artifact or None,
         "offers": offers,
     }
+
+
+def run(
+    question: str,
+    history: Optional[list[dict]] = None,
+    meetings_index: Optional[list[dict]] = None,
+    temperature: Optional[float] = None,
+    google_creds=None,
+    memory: str = "",
+) -> dict:
+    """Run the tool-agent (non-streaming). Returns {generation, citations, steps,
+    artifact, offers}. Never raises. ``google_creds`` enables the live Calendar tools."""
+    if not vs.llm_available():
+        return {"generation": "The assistant isn't available right now (no AI key is configured).",
+                "citations": [], "steps": [], "artifact": None, "offers": []}
+
+    graph, messages, citations, steps, artifact = _prepare(
+        question, history, meetings_index, temperature, google_creds, memory
+    )
+    try:
+        final = graph.invoke({"messages": messages})
+        answer = (final["messages"][-1].content or "").strip()
+    except vs.RateLimited as rl:
+        return {"generation": vs.rate_limit_message(rl.retry_hint),
+                "citations": citations[:5], "steps": steps, "artifact": artifact or None,
+                "offers": []}
+    except Exception as exc:  # noqa: BLE001 - never crash the assistant
+        logger.warning("Agentic RAG failed: %s", exc)
+        return {"generation": "Sorry, I couldn't complete that request just now.",
+                "citations": citations[:5], "steps": steps, "artifact": artifact or None,
+                "offers": []}
+    return _finalize(answer, citations, steps, artifact)
+
+
+def run_stream(
+    question: str,
+    history: Optional[list[dict]] = None,
+    meetings_index: Optional[list[dict]] = None,
+    temperature: Optional[float] = None,
+    google_creds=None,
+    memory: str = "",
+):
+    """True agentic streaming (Phase 4): tools run inside the graph, and the agent's
+    FINAL answer streams token-by-token via LangGraph ``stream_mode="messages"``.
+
+    Yields ``("token", str)`` events, then one ``("meta", dict)`` with citations/steps/
+    artifact/offers. Never raises. Tool-call turns emit empty content (Groq puts the call
+    in tool_call chunks, not text), so filtering on non-empty content from the ``agent``
+    node naturally streams only the final answer — not the model's tool deliberation."""
+    if not vs.llm_available():
+        yield ("token", "The assistant isn't available right now (no AI key is configured).")
+        yield ("meta", {"citations": [], "steps": [], "artifact": None, "offers": []})
+        return
+
+    graph, messages, citations, steps, artifact = _prepare(
+        question, history, meetings_index, temperature, google_creds, memory
+    )
+    parts: list[str] = []
+    try:
+        for chunk, meta in graph.stream({"messages": messages}, stream_mode="messages"):
+            if (
+                isinstance(chunk, AIMessageChunk)
+                and meta.get("langgraph_node") == "agent"
+                and isinstance(chunk.content, str)
+                and chunk.content
+            ):
+                parts.append(chunk.content)
+                yield ("token", chunk.content)
+    except vs.RateLimited as rl:
+        if not parts:
+            yield ("token", vs.rate_limit_message(rl.retry_hint))
+        yield ("meta", {"citations": citations[:5], "steps": steps,
+                        "artifact": artifact or None, "offers": []})
+        return
+    except Exception as exc:  # noqa: BLE001 - never crash the stream
+        logger.warning("Agentic RAG stream failed: %s", exc)
+        if not parts:
+            yield ("token", "Sorry, I couldn't complete that request just now.")
+        yield ("meta", {"citations": citations[:5], "steps": steps,
+                        "artifact": artifact or None, "offers": []})
+        return
+
+    result = _finalize("".join(parts).strip(), citations, steps, artifact)
+    if not parts:  # model returned only tool output / empty final — emit the fallback text
+        yield ("token", result["generation"])
+    yield ("meta", {"citations": result["citations"], "steps": result["steps"],
+                    "artifact": result["artifact"], "offers": result["offers"]})

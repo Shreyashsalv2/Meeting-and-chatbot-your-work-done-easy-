@@ -481,8 +481,9 @@ tone comes from the persona, not from cranking temperature.
 ### Streaming (SSE), token-neutral
 `POST /api/assistant/stream` returns `text/event-stream`; `answer_stream` yields `data: {"token": …}` events then
 a final `data: {"meta": …}` and `data: [DONE]`. It streams the **existing** generation call — no extra LLM call:
-retrieval/direct branches stream `ChatGroq.stream()`; the agent runs tools first then its answer streams (chunked,
-since tools finish before the final text). Frontend consumes the stream with a `fetch` + `ReadableStream` reader
+retrieval/direct branches stream `ChatGroq.stream()`; the agent originally ran tools first then *fake*-streamed the
+finished text word-by-word (later replaced by true token streaming — see "Phase 4: true agentic streaming").
+Frontend consumes the stream with a `fetch` + `ReadableStream` reader
 and appends tokens to the live bubble; metadata (route/citations/steps/artifact/offers) applies at the end.
 
 ### Reliable downloads (the transcript bug)
@@ -561,6 +562,50 @@ recalls it. Tested: "my cat is Mochi" → later "what is my cat called?" → *"Y
 - Only fires when a `user_id` exists (i.e. logged in). Un-authed / auth-disabled → memory is silently skipped.
 - Keep memory in its own collection — reusing `meeting_segments` would need `kind` filtering on every meeting
   query and risk cross-contamination; a second collection is simpler and safer.
+
+---
+
+## Follow-up: true agentic streaming ✅ Phase 4
+
+**Files:** `agentic_rag.py` (split `run` into shared `_prepare` + `_finalize`; NEW `run_stream`),
+`adaptive_rag.py` (agentic branch calls `run_stream`; removed the `_word_chunks` fake-stream). No frontend change.
+
+### What was wrong before
+The retrieval/direct branches already streamed the LLM live, but the **agent** couldn't: its answer is only known
+*after* the tool loop finishes. So the old code ran the whole agent, then fake-streamed the finished text
+word-by-word (`_word_chunks`). It *looked* streamed but the user still waited for the entire answer first.
+
+### The fix — LangGraph `stream_mode="messages"`
+LangGraph can stream the tokens of **any** chat-model call made inside a node (it attaches a streaming callback,
+so even `llm.invoke(...)` inside `agent_node` emits token chunks). `run_stream` iterates
+`graph.stream({"messages": …}, stream_mode="messages")`, which yields `(message_chunk, metadata)` for every token
+across the ReAct loop. Tools run *inside* the graph as before; the agent's final answer now streams token-by-token
+as the LLM writes it. **Token-neutral** — same LLM calls, just observed live.
+
+### Emitting only the final answer (not the tool deliberation)
+The loop calls the agent multiple times — early turns emit tool calls, the last emits the answer. To stream only
+the answer, forward a chunk when **all** of: it's an `AIMessageChunk`, from the `agent` node
+(`metadata["langgraph_node"] == "agent"`), and its `.content` is a non-empty string. Groq puts a tool call in
+*tool-call chunks* with empty text content, so tool-deliberation turns naturally emit nothing — only the final
+answer has text. (Reinforced by the prompt's "don't narrate your tool plan.")
+
+### Design: one graph, two drivers (DRY)
+`_prepare(...)` builds the graph + per-run collectors (citations/steps/artifact closures) + initial messages.
+`run` invokes it; `run_stream` streams it. `_finalize(...)` (dedupe citations + Wikipedia download safety-net) is
+shared. The collectors populate as the graph runs, so after streaming the `meta` event carries the same
+steps/citations/artifact/offers the non-streaming path returns. The SSE event shape is unchanged
+(`token`× N → `meta` → `[DONE]`), so the frontend was untouched.
+
+### Verify
+`run_stream("what is a webhook?")` → agent calls `wikipedia` + `create_document` (2 suppressed tool turns), then
+the final answer arrives as **many** `("token", …)` events (72 / 45 in tests, not one blob), followed by `meta`
+with the steps + downloadable artifact. Confirmed the same over the live SSE endpoint.
+
+### Gotchas
+- Don't filter by "does this message have tool_calls?" while streaming — you can't know until the message ends.
+  Filter on *non-empty text content from the agent node* instead; it's what actually distinguishes answer tokens.
+- If the model dumps everything into a tool (e.g. `create_document`) and leaves an empty final message, `parts`
+  is empty → `run_stream` falls back to emitting `_finalize`'s "Done."-style text so the UI never shows nothing.
 
 ---
 

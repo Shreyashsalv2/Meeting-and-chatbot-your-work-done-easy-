@@ -399,12 +399,6 @@ def _stream_generation(messages, temperature: float):
             yield vs.rate_limit_message(vs.rate_limit_retry_hint(exc))
 
 
-def _word_chunks(text: str):
-    """Chunk pre-computed text for a streamed feel (the agentic path runs tools first)."""
-    for word in text.split(" "):
-        yield word + " "
-
-
 def answer_stream(question, history=None, meetings_index=None, google_creds=None, user_id=None):
     """Generator yielding ('token', str) events then a final ('meta', dict). Never raises."""
     base_meta = {"route": "no_retrieval", "task_kind": None, "citations": [],
@@ -420,14 +414,21 @@ def answer_stream(question, history=None, meetings_index=None, google_creds=None
         route = state.get("route", "semantic_all")
 
         if route == "agentic":
-            res = _run_agent(state)  # tools run here (non-streamed); then stream the answer
-            for tok in _word_chunks(res.get("generation", "")):
-                yield ("token", tok)
-            yield ("meta", {
-                "route": "agentic", "task_kind": state.get("task_kind"),
-                "citations": res.get("citations", []), "steps": res.get("steps", []),
-                "artifact": res.get("artifact"), "offers": res.get("offers", []),
-            })
+            # True agentic streaming (Phase 4): tools run inside the graph, then the
+            # agent's final answer streams token-by-token (LangGraph stream_mode="messages").
+            from . import agentic_rag
+
+            for kind, data in agentic_rag.run_stream(
+                question,
+                state.get("history"),
+                state.get("meetings_index"),
+                temperature=temp_for(state.get("task_kind")),
+                google_creds=state.get("google_creds"),
+                memory=_memory_block(state),
+            ):
+                if kind == "meta":
+                    data = {"route": "agentic", "task_kind": state.get("task_kind"), **data}
+                yield (kind, data)
             return
 
         mem = _memory_block(state)
