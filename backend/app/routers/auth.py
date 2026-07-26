@@ -6,6 +6,7 @@ already-signed-in account. We only ever receive the tokens Google returns.
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,6 +19,12 @@ from ..config import settings
 from ..database import get_session
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# oauthlib blocks http by default — allow it ONLY for local (http) dev, never in prod
+# (https). Also relax token-scope so login completes even if some scopes weren't granted.
+if settings.oauth_redirect_uri.startswith("http://"):
+    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 
 def _flow(state: Optional[str] = None):
@@ -67,8 +74,14 @@ def google_login():
         access_type="offline", include_granted_scopes="true", prompt="consent"
     )
     resp = RedirectResponse(auth_url)
+    ck = cookie_kwargs()
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
-                    samesite=cookie_kwargs()["samesite"], secure=cookie_kwargs()["secure"], path="/")
+                    samesite=ck["samesite"], secure=ck["secure"], path="/")
+    # Persist the PKCE code_verifier so the callback's fresh Flow can complete the exchange.
+    verifier = getattr(flow, "code_verifier", None)
+    if verifier:
+        resp.set_cookie("oauth_verifier", verifier, httponly=True, max_age=600,
+                        samesite=ck["samesite"], secure=ck["secure"], path="/")
     return resp
 
 
@@ -77,6 +90,9 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     if not settings.auth_enabled:
         raise HTTPException(status_code=400, detail="Google auth is not configured")
     flow = _flow(state=request.cookies.get("oauth_state"))
+    verifier = request.cookies.get("oauth_verifier")
+    if verifier:
+        flow.code_verifier = verifier
     try:
         flow.fetch_token(authorization_response=str(request.url))
         creds = flow.credentials
@@ -106,6 +122,7 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     resp = RedirectResponse(settings.post_login_redirect)
     resp.set_cookie(SESSION_COOKIE, make_session_token(user.id), **cookie_kwargs())
     resp.delete_cookie("oauth_state", path="/")
+    resp.delete_cookie("oauth_verifier", path="/")
     return resp
 
 

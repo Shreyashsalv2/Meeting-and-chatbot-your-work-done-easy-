@@ -175,6 +175,19 @@ def run(
         def _svc():
             return _gbuild("calendar", "v3", credentials=google_creds, cache_discovery=False)
 
+        _tzc: dict = {}
+
+        def _caltz() -> str:
+            """The user's primary-calendar timezone (Google requires it on dateTimes)."""
+            if "v" not in _tzc:
+                try:
+                    _tzc["v"] = _svc().calendars().get(calendarId="primary").execute().get(
+                        "timeZone", "UTC"
+                    )
+                except Exception:  # noqa: BLE001
+                    _tzc["v"] = "UTC"
+            return _tzc["v"]
+
         @tool
         def list_calendar_events(days_ahead: int = 7) -> str:
             """List the user's upcoming Google Calendar events for the next N days
@@ -205,8 +218,10 @@ def run(
         def create_calendar_event(title: str, start: str, end: str, description: str = "") -> str:
             """Create a Google Calendar event. start/end are ISO datetimes
             (e.g. 2026-07-31T15:00:00). Returns the event id + link."""
+            tz = _caltz()
             body = {"summary": title, "description": description,
-                    "start": {"dateTime": start}, "end": {"dateTime": end}}
+                    "start": {"dateTime": start, "timeZone": tz},
+                    "end": {"dateTime": end, "timeZone": tz}}
             try:
                 ev = _svc().events().insert(calendarId="primary", body=body).execute()
             except Exception as exc:  # noqa: BLE001
@@ -223,9 +238,9 @@ def run(
             if description:
                 patch["description"] = description
             if start:
-                patch["start"] = {"dateTime": start}
+                patch["start"] = {"dateTime": start, "timeZone": _caltz()}
             if end:
-                patch["end"] = {"dateTime": end}
+                patch["end"] = {"dateTime": end, "timeZone": _caltz()}
             if not patch:
                 return "Nothing to update — provide at least one field to change."
             try:
@@ -315,10 +330,15 @@ def run(
     graph = g.compile()
 
     listing = "\n".join(f"{m['id']}: {m['title']}" for m in (meetings_index or [])) or "(none)"
+    import datetime as _date
+
+    _today = _date.date.today().isoformat()
     cal_note = (
-        "\n\nGoogle Calendar IS connected — you CAN list, create, amend/reschedule, and delete "
-        "the user's real calendar events with the calendar tools. Do it, then confirm what you "
-        "did (include the event link). To amend/delete, list first to get the event id."
+        f"\n\nGoogle Calendar IS connected — today is {_today}. You CAN list, create, "
+        "amend/reschedule, and delete the user's real events with the calendar tools. Do it, then "
+        "confirm (include the event link). Resolve relative dates to concrete ones from today "
+        "(e.g. 'Friday' → the upcoming Friday's date, THIS year) and pass start/end as "
+        "'YYYY-MM-DDTHH:MM:SS'. List first to get an event id before amending/deleting."
         if google_creds is not None
         else "\n\nGoogle Calendar is NOT connected for this user, so you cannot create real "
         "events yet — prepare the details and suggest they connect Google."

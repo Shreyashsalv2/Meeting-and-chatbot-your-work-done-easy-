@@ -3,6 +3,7 @@
 import {
   Bot,
   Home,
+  LogOut,
   MessagesSquare,
   Puzzle,
   Search,
@@ -15,6 +16,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "./SidebarContext";
 
@@ -148,6 +150,25 @@ export default function Sidebar() {
               <p className="truncate text-xs text-muted">Free workspace</p>
             </div>
           </div>
+          <button
+            type="button"
+            title="Sign out"
+            onClick={async () => {
+              try {
+                await api.logout();
+              } catch {
+                /* ignore */
+              }
+              window.location.href = "/";
+            }}
+            className={cn(
+              "mt-1 flex w-full items-center gap-3 rounded-lg px-2 py-2 text-sm font-medium text-muted transition hover:bg-panel hover:text-ink",
+              collapsed && "md:justify-center md:px-0",
+            )}
+          >
+            <LogOut size={18} />
+            <span className={cn(collapsed && "md:hidden")}>Sign out</span>
+          </button>
         </div>
       </aside>
     </>
