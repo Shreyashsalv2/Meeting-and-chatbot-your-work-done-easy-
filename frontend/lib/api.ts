@@ -3,6 +3,7 @@ import type {
   ActionItem,
   ActionItemInput,
   AssistantResponse,
+  AuthMe,
   ChatResponse,
   MeetingCreateInput,
   MeetingDetail,
@@ -18,6 +19,7 @@ export const API_BASE =
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include", // send the session cookie
     ...init,
   });
   if (!res.ok) {
@@ -128,6 +130,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/assistant/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ question, history }),
     });
     if (!res.ok || !res.body) throw new Error(`Stream failed (${res.status})`);
@@ -153,4 +156,9 @@ export const api = {
       }
     }
   },
+
+  // --- Auth ---
+  authMe: () => request<AuthMe>(`/auth/me`),
+  logout: () => request<{ ok: boolean }>(`/auth/logout`, { method: "POST" }),
+  googleLoginUrl: () => `${API_BASE}/auth/google/login`,
 };

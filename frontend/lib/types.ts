@@ -119,6 +119,13 @@ export interface AssistantOffer {
   prompt: string;
 }
 
+export interface AuthMe {
+  authenticated: boolean;
+  auth_enabled: boolean;
+  user?: { email: string; name?: string | null; picture?: string | null };
+  calendar_connected?: boolean;
+}
+
 export interface AssistantResponse {
   answer: string;
   route: AssistantRoute | string;
